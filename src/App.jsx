@@ -117,6 +117,24 @@ const play = (name) => { if(_soundOn && sounds[name]) { try { sounds[name](); } 
 
 const SCREENS = { LANDING:"landing", LOBBY:"lobby", WAITING:"waiting", GAME:"game" };
 
+// ── Clipboard helper (works on all browsers + mobile) ─────────
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  // Fallback for http or unsupported browsers
+  const el = document.createElement("textarea");
+  el.value = text;
+  el.style.position = "fixed";
+  el.style.opacity = "0";
+  document.body.appendChild(el);
+  el.focus();
+  el.select();
+  document.execCommand("copy");
+  document.body.removeChild(el);
+  return Promise.resolve();
+}
+
 // ── Themes ────────────────────────────────────────────────────
 const THEMES = {
   dark:{
@@ -497,16 +515,20 @@ function Waiting({ go, S, roomCode, myName, isHost }) {
 
           {/* Big room code — tap to copy */}
           <div
-            onClick={()=>{navigator.clipboard?.writeText(roomCode);setCopied(true);setTimeout(()=>setCopied(false),2500);}}
-            style={{display:"inline-flex",alignItems:"center",gap:16,background:"color-mix(in srgb, var(--gold) 8%, transparent)",border:"2px solid color-mix(in srgb, var(--gold) 40%, transparent)",borderRadius:16,padding:"18px 32px",cursor:"pointer",marginBottom:16,transition:"all 0.2s"}}
+            onClick={()=>{ copyText(roomCode).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false),2500); }); }}
+            style={{display:"inline-flex",alignItems:"center",gap:16,background:copied?"color-mix(in srgb, #3A5E2A 30%, transparent)":"color-mix(in srgb, var(--gold) 8%, transparent)",border:copied?"2px solid #3A5E2A":"2px solid color-mix(in srgb, var(--gold) 40%, transparent)",borderRadius:16,padding:"18px 32px",cursor:"pointer",marginBottom:16,transition:"all 0.2s",userSelect:"none"}}
           >
             <div>
               <div style={{fontSize:10,letterSpacing:3,textTransform:"uppercase",color:"var(--textMuted)",marginBottom:4}}>Room Code</div>
-              <div style={{fontFamily:"Georgia,serif",fontSize:52,color:"var(--gold)",letterSpacing:12,fontWeight:700,lineHeight:1}}>{roomCode}</div>
+              <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <div style={{fontFamily:"Georgia,serif",fontSize:52,color:"var(--gold)",letterSpacing:12,fontWeight:700,lineHeight:1}}>{roomCode}</div>
+              </div>
             </div>
-            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,color:copied?"#7AC87A":"var(--gold)",fontSize:22}}>
-              {copied ? "✓" : "📋"}
-              <div style={{fontSize:10,letterSpacing:1,textTransform:"uppercase",color:copied?"#7AC87A":"var(--textMuted)"}}>{copied?"Copied!":"Copy"}</div>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,minWidth:48}}>
+              <div style={{width:36,height:36,borderRadius:8,background:copied?"rgba(58,94,42,0.4)":"rgba(201,149,42,0.15)",border:`1px solid ${copied?"#3A5E2A":"rgba(201,149,42,0.4)"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,transition:"all 0.2s"}}>
+                {copied ? "✓" : "⎘"}
+              </div>
+              <div style={{fontSize:10,letterSpacing:1,textTransform:"uppercase",color:copied?"#7AC87A":"var(--textMuted)",transition:"all 0.2s"}}>{copied?"Copied!":"Copy"}</div>
             </div>
           </div>
 
@@ -515,11 +537,9 @@ function Waiting({ go, S, roomCode, myName, isHost }) {
             <button
               onClick={()=>{
                 const url = window.location.origin+"?room="+roomCode;
-                navigator.clipboard?.writeText(url);
-                setCopiedLink(true);
-                setTimeout(()=>setCopiedLink(false),2500);
+                copyText(url).then(()=>{ setCopiedLink(true); setTimeout(()=>setCopiedLink(false),2500); });
               }}
-              style={{...S.btnO,fontSize:12,padding:"9px 20px",display:"flex",alignItems:"center",gap:8,borderRadius:10}}
+              style={{...S.btnO,fontSize:13,padding:"11px 24px",display:"flex",alignItems:"center",gap:8,borderRadius:10,background:copiedLink?"color-mix(in srgb, #3A5E2A 20%, transparent)":"transparent",border:copiedLink?"1px solid #3A5E2A":`1px solid ${S.t.gold}80`,color:copiedLink?"#7AC87A":"var(--gold)",transition:"all 0.2s"}}
             >
               <span>{copiedLink?"✓ Link Copied!":"🔗 Copy Invite Link"}</span>
             </button>
