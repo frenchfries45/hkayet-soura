@@ -376,9 +376,10 @@ function Landing({ go, S, themeName, setThemeName }) {
 // LOBBY
 // ═════════════════════════════════════
 function Lobby({ go, S, setRoomCode, setMyName, setIsHost }) {
-  const [tab, setTab]     = useState("create");
+  const urlRoom = new URLSearchParams(window.location.search).get("room")||"";
+  const [tab, setTab]     = useState(urlRoom?"join":"create");
   const [name, setName]   = useState("");
-  const [code, setCode]   = useState("");
+  const [code, setCode]   = useState(urlRoom);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
 
@@ -444,7 +445,10 @@ function Lobby({ go, S, setRoomCode, setMyName, setIsHost }) {
             </>
           )}
           <div style={{textAlign:"center",color:"var(--textMuted)",fontSize:12,margin:"20px 0"}}>or</div>
-          <button style={{...S.btnG,width:"100%",padding:12}} onClick={()=>{navigator.clipboard?.writeText(window.location.href);}}>Copy Link</button>
+          <button style={{...S.btnG,width:"100%",padding:12}} onClick={()=>{
+            const url = window.location.origin+"?room="+roomCode;
+            navigator.clipboard?.writeText(url);
+          }}>🔗 Copy Invite Link</button>
         </div>
         <button style={{...S.btnG,marginTop:16,fontSize:13,border:"none",color:"var(--textMuted)"}} onClick={()=>go(SCREENS.LANDING)}>Back</button>
       </div>
@@ -456,8 +460,9 @@ function Lobby({ go, S, setRoomCode, setMyName, setIsHost }) {
 // WAITING ROOM
 // ═════════════════════════════════════
 function Waiting({ go, S, roomCode, myName, isHost }) {
-  const [players, setPlayers] = useState([]);
-  const [copied, setCopied]   = useState(false);
+  const [players, setPlayers]     = useState([]);
+  const [copied, setCopied]       = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   const load = async () => {
     const {data} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
@@ -488,9 +493,40 @@ function Waiting({ go, S, roomCode, myName, isHost }) {
     <div style={{flex:1,padding:"40px 20px"}}>
       <div style={{maxWidth:720,margin:"0 auto"}}>
         <div style={{textAlign:"center",marginBottom:36}}>
-          <div style={{fontSize:11,letterSpacing:3,textTransform:"uppercase",color:"var(--textMuted)",marginBottom:10}}>Room Code</div>
-          <div style={{fontFamily:"Georgia,serif",fontSize:48,color:"var(--gold)",letterSpacing:10,fontWeight:700,cursor:"pointer"}} onClick={()=>{navigator.clipboard?.writeText(roomCode);setCopied(true);setTimeout(()=>setCopied(false),2000);}}>{roomCode}</div>
-          <div style={{fontSize:12,color:"var(--textMuted)",marginTop:8}}>{copied?"Copied!":"Tap to copy · Share with friends"}</div>
+          <div style={{fontSize:11,letterSpacing:3,textTransform:"uppercase",color:"var(--textMuted)",marginBottom:14}}>Invite Friends</div>
+
+          {/* Big room code — tap to copy */}
+          <div
+            onClick={()=>{navigator.clipboard?.writeText(roomCode);setCopied(true);setTimeout(()=>setCopied(false),2500);}}
+            style={{display:"inline-flex",alignItems:"center",gap:16,background:"color-mix(in srgb, var(--gold) 8%, transparent)",border:"2px solid color-mix(in srgb, var(--gold) 40%, transparent)",borderRadius:16,padding:"18px 32px",cursor:"pointer",marginBottom:16,transition:"all 0.2s"}}
+          >
+            <div>
+              <div style={{fontSize:10,letterSpacing:3,textTransform:"uppercase",color:"var(--textMuted)",marginBottom:4}}>Room Code</div>
+              <div style={{fontFamily:"Georgia,serif",fontSize:52,color:"var(--gold)",letterSpacing:12,fontWeight:700,lineHeight:1}}>{roomCode}</div>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,color:copied?"#7AC87A":"var(--gold)",fontSize:22}}>
+              {copied ? "✓" : "📋"}
+              <div style={{fontSize:10,letterSpacing:1,textTransform:"uppercase",color:copied?"#7AC87A":"var(--textMuted)"}}>{copied?"Copied!":"Copy"}</div>
+            </div>
+          </div>
+
+          {/* Copy invite link button */}
+          <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
+            <button
+              onClick={()=>{
+                const url = window.location.origin+"?room="+roomCode;
+                navigator.clipboard?.writeText(url);
+                setCopiedLink(true);
+                setTimeout(()=>setCopiedLink(false),2500);
+              }}
+              style={{...S.btnO,fontSize:12,padding:"9px 20px",display:"flex",alignItems:"center",gap:8,borderRadius:10}}
+            >
+              <span>{copiedLink?"✓ Link Copied!":"🔗 Copy Invite Link"}</span>
+            </button>
+          </div>
+          <div style={{fontSize:11,color:"var(--textMuted)",marginTop:10}}>
+            Share the code or the link — friends can join instantly
+          </div>
         </div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:32}}>
           {slots.map((p,i)=>(
@@ -1090,18 +1126,40 @@ function Game({ go, S, roomCode, myName }) {
 // APP ROOT
 // ═════════════════════════════════════
 export default function App() {
-  const [screen, setScreen]       = useState(SCREENS.LANDING);
   const [themeName, setThemeName] = useState("dark");
-  const [roomCode, setRoomCode]   = useState("");
-  const [myName, setMyName]       = useState("");
   const [isHost, setIsHost]       = useState(false);
+
+  // Restore session from sessionStorage on refresh
+  const savedCode   = sessionStorage.getItem("hk_room") || "";
+  const savedName   = sessionStorage.getItem("hk_name") || "";
+  const savedScreen = sessionStorage.getItem("hk_screen") || SCREENS.LANDING;
+
+  const [screen, setScreen]   = useState(savedScreen);
+  const [roomCode, setRoomCode] = useState(savedCode);
+  const [myName, setMyName]     = useState(savedName);
+
+  // Persist session state on every change
+  const go = (s) => {
+    setScreen(s);
+    sessionStorage.setItem("hk_screen", s);
+    // Clear session when going back to landing or lobby
+    if(s===SCREENS.LANDING || s===SCREENS.LOBBY) {
+      sessionStorage.removeItem("hk_room");
+      sessionStorage.removeItem("hk_name");
+      sessionStorage.removeItem("hk_screen");
+    }
+  };
+
+  const setCode = (c) => { setRoomCode(c); sessionStorage.setItem("hk_room", c); };
+  const setName = (n) => { setMyName(n);   sessionStorage.setItem("hk_name", n); };
+
   const S = makeS(THEMES[themeName]);
   return (
     <div style={{...S.root,"--bg":S.t.bg,"--surface":S.t.surface,"--surfaceHi":S.t.surfaceHi,"--border":S.t.border,"--borderHi":S.t.borderHi,"--text":S.t.text,"--textMuted":S.t.textMuted,"--gold":S.t.gold,"--overlay":S.t.overlay,"--overlayDk":S.t.overlayDk,"--fullBg":S.t.fullBg,"--inputBg":S.t.inputBg,"--phaseBg":S.t.phaseBg,"--headerBg":S.t.headerBg}}>
-      {screen===SCREENS.LANDING&&<Landing  go={setScreen} S={S} themeName={themeName} setThemeName={setThemeName}/>}
-      {screen===SCREENS.LOBBY  &&<Lobby    go={setScreen} S={S} setRoomCode={setRoomCode} setMyName={setMyName} setIsHost={setIsHost}/>}
-      {screen===SCREENS.WAITING&&<Waiting  go={setScreen} S={S} roomCode={roomCode} myName={myName} isHost={isHost}/>}
-      {screen===SCREENS.GAME   &&<Game     go={setScreen} S={S} roomCode={roomCode} myName={myName}/>}
+      {screen===SCREENS.LANDING&&<Landing  go={go} S={S} themeName={themeName} setThemeName={setThemeName}/>}
+      {screen===SCREENS.LOBBY  &&<Lobby    go={go} S={S} setRoomCode={setCode} setMyName={setName} setIsHost={setIsHost}/>}
+      {screen===SCREENS.WAITING&&<Waiting  go={go} S={S} roomCode={roomCode} myName={myName} isHost={isHost}/>}
+      {screen===SCREENS.GAME   &&<Game     go={go} S={S} roomCode={roomCode} myName={myName}/>}
     </div>
   );
 }
