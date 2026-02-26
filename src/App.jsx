@@ -435,9 +435,13 @@ function Game({ go, S, roomCode, myName }) {
     // Fetch full card data from Supabase for each card_id on the board
     const cardIds = plays.map(p=>p.card_id);
     const {data:cardData} = await supabase.from("cards").select("*").in("id",cardIds);
+    const BG_POOL2 = [
+      "linear-gradient(145deg,#2A1A0A,#7A4010)","linear-gradient(145deg,#1E2D1E,#3A5E2A)",
+      "linear-gradient(145deg,#0D1F2D,#1A4060)","linear-gradient(145deg,#2A2A1A,#6A6A20)",
+      "linear-gradient(145deg,#1A1A2D,#3A3A6B)","linear-gradient(145deg,#2D1A2D,#6B2060)",
+    ];
     const cardMap = {};
-    if(cardData) cardData.forEach(c=>{ cardMap[c.id]=c; });
-    // Also check fallback deck
+    if(cardData) cardData.forEach((c,i)=>{ cardMap[c.id]={ ...c, bg: c.bg||BG_POOL2[i%BG_POOL2.length], emoji: c.emoji||"🎴" }; });
     FALLBACK_DECK.forEach(c=>{ if(!cardMap[c.id]) cardMap[c.id]=c; });
     const cards = plays.map(play=>{
       const cd = cardMap[play.card_id] || FALLBACK_DECK[0];
@@ -457,10 +461,19 @@ function Game({ go, S, roomCode, myName }) {
         if(room.clue) setConfirmedClue(room.clue);
         setGameTab(room.phase>=2?"board":"hand");
       }
-      const {data:cards} = await supabase.from("cards").select("*").eq("active",true);
-      const deck = (cards&&cards.length>0)?cards:FALLBACK_DECK;
+      const {data:cards, error:cardErr} = await supabase.from("cards").select("*").eq("active",true);
+      console.log("[Hkayet] cards fetch:", cards?.length, "error:", cardErr);
+      // Give each real card a fallback bg in case image fails
+      const BG_POOL = [
+        "linear-gradient(145deg,#2A1A0A,#7A4010)","linear-gradient(145deg,#1E2D1E,#3A5E2A)",
+        "linear-gradient(145deg,#0D1F2D,#1A4060)","linear-gradient(145deg,#2A2A1A,#6A6A20)",
+        "linear-gradient(145deg,#1A1A2D,#3A3A6B)","linear-gradient(145deg,#2D1A2D,#6B2060)",
+        "linear-gradient(145deg,#3D2B1F,#7A4A30)","linear-gradient(145deg,#1A2010,#4A6020)",
+      ];
+      const realCards = cards ? cards.map((c,i)=>({ ...c, bg: c.bg || BG_POOL[i%BG_POOL.length], emoji: c.emoji || "🎴" })) : [];
+      const deck = realCards.length>0 ? realCards : FALLBACK_DECK;
       const sdeck = shuffle(deck);
-      deckRef.current = sdeck; // store for loadBoard to use
+      deckRef.current = sdeck;
       const pIdx = ps?ps.findIndex(p=>p.name===myName):0;
       const start = Math.max(pIdx,0)*6;
       setHandCards(sdeck.slice(start,start+6));
@@ -469,6 +482,7 @@ function Game({ go, S, roomCode, myName }) {
       if(myPlay) setSubmittedCardId(myPlay.card_id);
       const {data:myVote} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",room?.round||1).eq("voter_name",myName).single();
       if(myVote){setVoteConfirmed(true);}
+      setDebugMsg(deck.length + " cards loaded from " + (realCards.length>0?"Supabase":"fallback deck"));
       setLoading(false);
     };
     init();
@@ -563,10 +577,13 @@ function Game({ go, S, roomCode, myName }) {
 
   const activeBoardCard = boardCards[focusedBoard];
 
+  const [debugMsg, setDebugMsg] = useState("");
+
   if(loading) return (
     <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
       <div style={{fontSize:32}}>🎴</div>
       <div style={{fontSize:14,color:"var(--textMuted)",letterSpacing:2,textTransform:"uppercase"}}>Loading game...</div>
+      {debugMsg&&<div style={{fontSize:11,color:"var(--textMuted)",maxWidth:300,textAlign:"center"}}>{debugMsg}</div>}
     </div>
   );
 
