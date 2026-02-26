@@ -95,6 +95,45 @@ const FALLBACK_DECK = [
   {id:"c48",emoji:"\u{1F441}\uFE0F",bg:"linear-gradient(145deg,#1A0D2D,#4A206B)"},
 ];
 
+// ── CardFace: renders real image if available, else emoji fallback ─
+function CardFace({ card, size = "large", label = null, highlight = false, voteCount = null }) {
+  const isLarge = size === "large";
+  const isMini  = size === "mini";
+  const w = isMini ? 52  : isLarge ? "min(230px,54vw)" : 220;
+  const h = isMini ? 72  : isLarge ? "min(324px,76vw)" : "min(308px,77vw)";
+  const emojiSize = isMini ? 22 : isLarge ? "clamp(76px,17vw,114px)" : "clamp(72px,16vw,108px)";
+  const radius = isMini ? 8 : isLarge ? 20 : 18;
+  const border = highlight
+    ? "3px solid #C9952A"
+    : `${isMini ? 1 : 2}px solid color-mix(in srgb, var(--gold) ${isMini ? 15 : 30}%, transparent)`;
+
+  return (
+    <div style={{
+      width: w, height: h, borderRadius: radius, flexShrink: 0,
+      background: card?.bg || "#2A1A0A",
+      border, position: "relative", overflow: "hidden",
+      boxShadow: isMini ? "none" : "0 40px 100px rgba(0,0,0,0.7)",
+    }}>
+      {card?.image_url ? (
+        <img src={card.image_url} alt="" style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }} />
+      ) : (
+        <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <span style={{ fontSize: emojiSize, lineHeight: 1 }}>{card?.emoji || "🎴"}</span>
+        </div>
+      )}
+      {label && (
+        <div style={{ position:"absolute", bottom: isMini ? 4 : 14, left:0, right:0, textAlign:"center", fontSize: isMini ? 8 : 10, letterSpacing:2, color:"color-mix(in srgb, var(--gold) 45%, transparent)", textTransform:"uppercase", padding:"0 4px", background: isMini ? "transparent" : "none" }}>{label}</div>
+      )}
+      {highlight && (
+        <div style={{ position:"absolute", top:14, left:"50%", transform:"translateX(-50%)", fontSize:9, letterSpacing:2, textTransform:"uppercase", color:"var(--gold)", background:"rgba(0,0,0,0.7)", padding:"3px 10px", borderRadius:4, whiteSpace:"nowrap" }}>Storyteller's Card</div>
+      )}
+      {voteCount > 0 && (
+        <div style={{ position:"absolute", top:10, right:10, fontSize:12, fontWeight:700, color:"#7AC87A", background:"rgba(30,60,30,0.9)", borderRadius:8, padding:"2px 8px" }}>+{voteCount}</div>
+      )}
+    </div>
+  );
+}
+
 // ═════════════════════════════════════
 // LANDING
 // ═════════════════════════════════════
@@ -590,15 +629,14 @@ function Game({ go, S, roomCode, myName }) {
           {phase===1&&isStoryteller&&<div style={{textAlign:"center",padding:"14px",background:"var(--surface)",borderRadius:12,fontSize:13,color:"var(--textMuted)"}}>Waiting for others to submit their cards...</div>}
 
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
-            <div onClick={()=>{if(phase===0&&isStoryteller)setFocusedHand(selHand);else setFullscreen({type:"hand",idx:selHand});}} style={{width:"min(230px,54vw)",height:"min(324px,76vw)",borderRadius:20,flexShrink:0,background:handCards[selHand]?.bg||"#333",boxShadow:"0 40px 100px rgba(0,0,0,0.7)",border:"2px solid color-mix(in srgb, var(--gold) 35%, transparent)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",position:"relative",cursor:"pointer"}}>
-              <span style={{fontSize:"clamp(76px,17vw,114px)",lineHeight:1}}>{handCards[selHand]?.emoji||"🎴"}</span>
-              <div style={{position:"absolute",bottom:14,fontSize:10,letterSpacing:2,color:"color-mix(in srgb, var(--gold) 45%, transparent)",textTransform:"uppercase"}}>{phase===0&&isStoryteller?"Tap to give a clue":"Tap to expand"}</div>
+            <div onClick={()=>{if(phase===0&&isStoryteller)setFocusedHand(selHand);else setFullscreen({type:"hand",idx:selHand});}} style={{cursor:"pointer",position:"relative"}}>
+              <CardFace card={handCards[selHand]} size="large" label={phase===0&&isStoryteller?"Tap to give a clue":"Tap to expand"} />
             </div>
             <div style={{display:"flex",gap:8,overflowX:"auto",padding:"4px 0",maxWidth:"100%"}}>
               {handCards.map((c,i)=>(
-                <div key={i} onClick={()=>{setSelHand(i);if(phase===0&&isStoryteller)setFocusedHand(i);else setFullscreen({type:"hand",idx:i});}} style={{width:52,height:52,borderRadius:10,cursor:"pointer",flexShrink:0,background:selHand===i?c.bg:"rgba(255,255,255,0.04)",border:selHand===i?"2px solid #C9952A":"1px solid color-mix(in srgb, var(--gold) 12%, transparent)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",boxShadow:selHand===i?"0 4px 18px rgba(201,149,42,0.35)":"none",transition:"all 0.2s",transform:selHand===i?"translateY(-4px)":"none"}}>
-                  <span style={{fontSize:22}}>{c.emoji}</span>
-                  <span style={{fontSize:9,color:selHand===i?"var(--gold)":"var(--textMuted)",fontWeight:700}}>{i+1}</span>
+                <div key={i} onClick={()=>{setSelHand(i);if(phase===0&&isStoryteller)setFocusedHand(i);else setFullscreen({type:"hand",idx:i});}} style={{cursor:"pointer",flexShrink:0,transform:selHand===i?"translateY(-4px)":"none",transition:"transform 0.2s",outline:selHand===i?"2px solid #C9952A":"none",borderRadius:8,boxShadow:selHand===i?"0 4px 18px rgba(201,149,42,0.35)":"none"}}>
+                  <CardFace card={c} size="mini" />
+                  <div style={{textAlign:"center",fontSize:9,color:selHand===i?"var(--gold)":"var(--textMuted)",fontWeight:700,marginTop:2}}>{i+1}</div>
                 </div>
               ))}
             </div>
@@ -623,11 +661,12 @@ function Game({ go, S, roomCode, myName }) {
             <>
               {activeBoardCard&&(
                 <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
-                  <div onClick={()=>setFullscreen({type:"board",idx:focusedBoard})} style={{width:"min(230px,54vw)",height:"min(324px,76vw)",borderRadius:20,background:activeBoardCard.bg,boxShadow:"0 40px 100px rgba(0,0,0,0.7)",border:activeBoardCard.isStoryteller&&phase===3?"3px solid #C9952A":"2px solid color-mix(in srgb, var(--gold) 30%, transparent)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",position:"relative",cursor:"pointer",transition:"background 0.3s"}}>
-                    <span style={{fontSize:"clamp(76px,17vw,114px)",lineHeight:1}}>{activeBoardCard.emoji}</span>
-                    {activeBoardCard.isStoryteller&&phase===3&&<div style={{position:"absolute",top:14,left:"50%",transform:"translateX(-50%)",fontSize:9,letterSpacing:2,textTransform:"uppercase",color:"var(--gold)",background:"color-mix(in srgb, var(--gold) 18%, transparent)",padding:"3px 10px",borderRadius:4,whiteSpace:"nowrap"}}>Storyteller's Card</div>}
-                    <div style={{position:"absolute",bottom:14,fontSize:10,letterSpacing:2,color:"color-mix(in srgb, var(--gold) 45%, transparent)",textTransform:"uppercase"}}>{phase===3?activeBoardCard.owner:"Tap to expand"}</div>
-                    {activeBoardCard.votes?.length>0&&phase===3&&<div style={{position:"absolute",top:14,right:14,fontSize:13,fontWeight:700,color:"#7AC87A",background:"rgba(30,60,30,0.9)",borderRadius:8,padding:"2px 8px"}}>+{activeBoardCard.votes.length}</div>}
+                  <div onClick={()=>setFullscreen({type:"board",idx:focusedBoard})} style={{cursor:"pointer",position:"relative"}}>
+                    <CardFace card={activeBoardCard} size="large"
+                      highlight={activeBoardCard.isStoryteller&&phase===3}
+                      label={phase===3?activeBoardCard.owner:"Tap to expand"}
+                      voteCount={phase===3?activeBoardCard.votes?.length:0}
+                    />
                   </div>
                   {phase===2&&!voteConfirmed&&activeBoardCard.owner!==myName&&(
                     <button style={{...S.btnP,padding:"13px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320}} onClick={()=>setBoardOverlay(focusedBoard)}>Vote for this card</button>
@@ -635,7 +674,9 @@ function Game({ go, S, roomCode, myName }) {
                   <div style={{display:"flex",gap:8,overflowX:"auto",padding:"4px 0",maxWidth:"100%"}}>
                     {boardCards.map((c,i)=>(
                       <div key={i} onClick={()=>{setFocusedBoard(i);setFullscreen({type:"board",idx:i});}} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0}}>
-                        <div style={{width:52,height:72,borderRadius:8,background:c.bg,border:focusedBoard===i?(c.isStoryteller&&phase===3?"2px solid #C9952A":"2px solid var(--gold)"):"1px solid color-mix(in srgb, var(--gold) 15%, transparent)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,transition:"all 0.2s",transform:focusedBoard===i?"translateY(-4px)":"none"}}>{c.emoji}</div>
+                        <div style={{transform:focusedBoard===i?"translateY(-4px)":"none",transition:"transform 0.2s",outline:focusedBoard===i?(c.isStoryteller&&phase===3?"2px solid #C9952A":"2px solid var(--gold)"):"none",borderRadius:8}}>
+                          <CardFace card={c} size="mini" />
+                        </div>
                         {phase===3&&<span style={{fontSize:8,color:c.isStoryteller?"var(--gold)":"var(--textMuted)",textAlign:"center",maxWidth:52,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.owner}</span>}
                         {votedFor===i&&<span style={{fontSize:9,color:"#7AC87A"}}>✓</span>}
                       </div>
@@ -655,9 +696,8 @@ function Game({ go, S, roomCode, myName }) {
       {boardOverlay!==null&&!fullscreen&&(
         <div onClick={()=>setBoardOverlay(null)} style={{position:"fixed",inset:0,background:"var(--overlay)",backdropFilter:"blur(16px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,padding:24}}>
           <div onClick={e=>e.stopPropagation()} style={{maxWidth:380,width:"100%",display:"flex",flexDirection:"column",alignItems:"center",gap:20}}>
-            <div onClick={()=>setFullscreen({type:"board",idx:boardOverlay})} style={{width:"min(220px,55vw)",height:"min(308px,77vw)",borderRadius:18,background:boardCards[boardOverlay]?.bg,border:"2px solid color-mix(in srgb, var(--gold) 30%, transparent)",display:"flex",alignItems:"center",justifyContent:"center",position:"relative",boxShadow:"0 40px 100px rgba(0,0,0,0.8)",cursor:"pointer"}}>
-              <span style={{fontSize:"clamp(72px,16vw,108px)",lineHeight:1}}>{boardCards[boardOverlay]?.emoji}</span>
-              <div style={{position:"absolute",bottom:12,fontSize:9,letterSpacing:3,color:"color-mix(in srgb, var(--gold) 45%, transparent)",textTransform:"uppercase"}}>Tap to expand</div>
+            <div onClick={()=>setFullscreen({type:"board",idx:boardOverlay})} style={{cursor:"pointer"}}>
+              <CardFace card={boardCards[boardOverlay]} size="medium" label="Tap to expand" />
             </div>
             {phase===2&&boardCards[boardOverlay]?.owner!==myName&&(
               <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%"}} onClick={confirmVote}>Confirm Vote</button>
@@ -670,9 +710,8 @@ function Game({ go, S, roomCode, myName }) {
       {/* CLUE INPUT OVERLAY */}
       {focusedHand!==null&&!fullscreen&&(
         <div onClick={()=>setFocusedHand(null)} style={{position:"fixed",inset:0,background:"var(--overlayDk)",backdropFilter:"blur(20px)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:300,padding:"20px 24px",gap:18,overflowY:"auto"}}>
-          <div onClick={e=>{e.stopPropagation();setFullscreen({type:"hand",idx:focusedHand});}} style={{width:"min(220px,55vw)",height:"min(308px,77vw)",borderRadius:18,background:handCards[focusedHand]?.bg,border:"2px solid color-mix(in srgb, var(--gold) 50%, transparent)",display:"flex",alignItems:"center",justifyContent:"center",position:"relative",boxShadow:"0 32px 80px rgba(0,0,0,0.8)",cursor:"pointer"}}>
-            <span style={{fontSize:"clamp(72px,16vw,108px)",lineHeight:1}}>{handCards[focusedHand]?.emoji}</span>
-            <div style={{position:"absolute",bottom:12,fontSize:9,letterSpacing:3,color:"color-mix(in srgb, var(--gold) 45%, transparent)",textTransform:"uppercase"}}>Tap to expand</div>
+          <div onClick={e=>{e.stopPropagation();setFullscreen({type:"hand",idx:focusedHand});}} style={{cursor:"pointer"}}>
+            <CardFace card={handCards[focusedHand]} size="medium" label="Tap to expand" />
           </div>
           {phase===0&&isStoryteller&&(
             <div onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:380,display:"flex",flexDirection:"column",gap:10}}>
@@ -690,12 +729,18 @@ function Game({ go, S, roomCode, myName }) {
         <div onClick={()=>setFullscreen(null)} style={{position:"fixed",inset:0,background:"var(--fullBg)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500,cursor:"pointer"}}>
           <div style={{position:"absolute",bottom:20,fontSize:10,letterSpacing:2,textTransform:"uppercase",color:"rgba(255,255,255,0.25)"}}>Tap anywhere to close</div>
           {fullscreen.type==="board"?(
-            <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,background:boardCards[fullscreen.idx]?.bg,border:boardCards[fullscreen.idx]?.isStoryteller?"3px solid #C9952A":"2px solid rgba(201,149,42,0.2)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2}}>
-              <span style={{fontSize:"clamp(100px,22vw,220px)",lineHeight:1}}>{boardCards[fullscreen.idx]?.emoji}</span>
+            <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:boardCards[fullscreen.idx]?.bg,border:boardCards[fullscreen.idx]?.isStoryteller?"3px solid #C9952A":"2px solid rgba(201,149,42,0.2)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
+              {boardCards[fullscreen.idx]?.image_url
+                ?<img src={boardCards[fullscreen.idx].image_url} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
+                :<span style={{fontSize:"clamp(100px,22vw,220px)",lineHeight:1}}>{boardCards[fullscreen.idx]?.emoji}</span>
+              }
             </div>
           ):(
-            <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,background:handCards[fullscreen.idx]?.bg,border:"2px solid rgba(201,149,42,0.2)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2}}>
-              <span style={{fontSize:"clamp(100px,22vw,220px)",lineHeight:1}}>{handCards[fullscreen.idx]?.emoji}</span>
+            <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:handCards[fullscreen.idx]?.bg,border:"2px solid rgba(201,149,42,0.2)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
+              {handCards[fullscreen.idx]?.image_url
+                ?<img src={handCards[fullscreen.idx].image_url} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
+                :<span style={{fontSize:"clamp(100px,22vw,220px)",lineHeight:1}}>{handCards[fullscreen.idx]?.emoji}</span>
+              }
             </div>
           )}
         </div>
