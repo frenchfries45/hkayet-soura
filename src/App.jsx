@@ -115,12 +115,16 @@ function CardFace({ card, size = "large", label = null, highlight = false, voteC
       boxShadow: isMini ? "none" : "0 40px 100px rgba(0,0,0,0.7)",
     }}>
       {card?.image_url ? (
-        <img src={card.image_url} alt="" style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }} />
-      ) : (
-        <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <span style={{ fontSize: emojiSize, lineHeight: 1 }}>{card?.emoji || "🎴"}</span>
-        </div>
-      )}
+        <img
+          src={card.image_url}
+          alt=""
+          style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }}
+          onError={e => { e.target.style.display="none"; e.target.nextSibling.style.display="flex"; }}
+        />
+      ) : null}
+      <div style={{ position:"absolute", inset:0, display: card?.image_url ? "none" : "flex", alignItems:"center", justifyContent:"center" }}>
+        <span style={{ fontSize: emojiSize, lineHeight: 1 }}>{card?.emoji || "🎴"}</span>
+      </div>
       {label && (
         <div style={{ position:"absolute", bottom: isMini ? 4 : 14, left:0, right:0, textAlign:"center", fontSize: isMini ? 8 : 10, letterSpacing:2, color:"color-mix(in srgb, var(--gold) 45%, transparent)", textTransform:"uppercase", padding:"0 4px", background: isMini ? "transparent" : "none" }}>{label}</div>
       )}
@@ -237,7 +241,7 @@ function Landing({ go, S, themeName, setThemeName }) {
 // ═════════════════════════════════════
 // LOBBY
 // ═════════════════════════════════════
-function Lobby({ go, S, setRoomCode, setMyName }) {
+function Lobby({ go, S, setRoomCode, setMyName, setIsHost }) {
   const [tab, setTab]     = useState("create");
   const [name, setName]   = useState("");
   const [code, setCode]   = useState("");
@@ -254,7 +258,7 @@ function Lobby({ go, S, setRoomCode, setMyName }) {
     const {error:e1} = await supabase.from("rooms").insert({code:newCode,status:"waiting",storyteller_idx:0,phase:0,round:1});
     if(e1){setError("Could not create room. Try again.");setLoading(false);return;}
     await supabase.from("room_players").insert({room_code:newCode,name:name.trim(),score:0,is_active:true});
-    setMyName(name.trim());setRoomCode(newCode);go(SCREENS.WAITING);setLoading(false);
+    setMyName(name.trim());setRoomCode(newCode);setIsHost(true);go(SCREENS.WAITING);setLoading(false);
   };
 
   const handleJoin = async () => {
@@ -272,7 +276,7 @@ function Lobby({ go, S, setRoomCode, setMyName }) {
       if(all&&all.length>=8){setError("Room is full (max 8 players).");setLoading(false);return;}
       await supabase.from("room_players").insert({room_code:upper,name:name.trim(),score:0,is_active:true});
     }
-    setMyName(name.trim());setRoomCode(upper);
+    setMyName(name.trim());setRoomCode(upper);setIsHost(false);
     if(room.status==="playing"){go(SCREENS.GAME);}else{go(SCREENS.WAITING);}
     setLoading(false);
   };
@@ -317,7 +321,7 @@ function Lobby({ go, S, setRoomCode, setMyName }) {
 // ═════════════════════════════════════
 // WAITING ROOM
 // ═════════════════════════════════════
-function Waiting({ go, S, roomCode, myName }) {
+function Waiting({ go, S, roomCode, myName, isHost }) {
   const [players, setPlayers] = useState([]);
   const [copied, setCopied]   = useState(false);
 
@@ -331,6 +335,9 @@ function Waiting({ go, S, roomCode, myName }) {
     load();
     const ch = supabase.channel(`wait:${roomCode}`)
       .on("postgres_changes",{event:"*",schema:"public",table:"room_players",filter:`room_code=eq.${roomCode}`},load)
+      .on("postgres_changes",{event:"UPDATE",schema:"public",table:"rooms",filter:`code=eq.${roomCode}`},(payload)=>{
+        if(payload.new.status==="playing") go(SCREENS.GAME);
+      })
       .subscribe();
     return ()=>supabase.removeChannel(ch);
   },[roomCode]);
@@ -362,7 +369,11 @@ function Waiting({ go, S, roomCode, myName }) {
         </div>
         <div style={{textAlign:"center"}}>
           <div style={{fontSize:13,color:"var(--textMuted)",marginBottom:20}}>{players.length} player{players.length!==1?"s":""} joined · Need at least 3 to start</div>
-          <button style={{...S.btnP,padding:"14px 40px",fontSize:15,opacity:players.length<3?0.4:1}} onClick={handleStart} disabled={players.length<3}>Start Game</button>
+          {isHost ? (
+            <button style={{...S.btnP,padding:"14px 40px",fontSize:15,opacity:players.length<3?0.4:1}} onClick={handleStart} disabled={players.length<3}>Start Game</button>
+          ) : (
+            <div style={{fontSize:13,color:"var(--textMuted)",padding:"14px 40px",background:"var(--surface)",borderRadius:10,display:"inline-block"}}>Waiting for the host to start...</div>
+          )}
         </div>
         <div style={{textAlign:"center",marginTop:16}}>
           <button style={{...S.btnG,border:"none",color:"var(--textMuted)",fontSize:13}} onClick={()=>go(SCREENS.LOBBY)}>Back</button>
@@ -840,12 +851,13 @@ export default function App() {
   const [themeName, setThemeName] = useState("dark");
   const [roomCode, setRoomCode]   = useState("");
   const [myName, setMyName]       = useState("");
+  const [isHost, setIsHost]       = useState(false);
   const S = makeS(THEMES[themeName]);
   return (
     <div style={{...S.root,"--bg":S.t.bg,"--surface":S.t.surface,"--surfaceHi":S.t.surfaceHi,"--border":S.t.border,"--borderHi":S.t.borderHi,"--text":S.t.text,"--textMuted":S.t.textMuted,"--gold":S.t.gold,"--overlay":S.t.overlay,"--overlayDk":S.t.overlayDk,"--fullBg":S.t.fullBg,"--inputBg":S.t.inputBg,"--phaseBg":S.t.phaseBg,"--headerBg":S.t.headerBg}}>
       {screen===SCREENS.LANDING&&<Landing  go={setScreen} S={S} themeName={themeName} setThemeName={setThemeName}/>}
-      {screen===SCREENS.LOBBY  &&<Lobby    go={setScreen} S={S} setRoomCode={setRoomCode} setMyName={setMyName}/>}
-      {screen===SCREENS.WAITING&&<Waiting  go={setScreen} S={S} roomCode={roomCode} myName={myName}/>}
+      {screen===SCREENS.LOBBY  &&<Lobby    go={setScreen} S={S} setRoomCode={setRoomCode} setMyName={setMyName} setIsHost={setIsHost}/>}
+      {screen===SCREENS.WAITING&&<Waiting  go={setScreen} S={S} roomCode={roomCode} myName={myName} isHost={isHost}/>}
       {screen===SCREENS.GAME   &&<Game     go={setScreen} S={S} roomCode={roomCode} myName={myName}/>}
     </div>
   );
