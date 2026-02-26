@@ -462,11 +462,6 @@ function Lobby({ go, S, setRoomCode, setMyName, setIsHost }) {
               <button style={{...S.btnP,width:"100%",padding:14,fontSize:15,opacity:loading?0.6:1}} onClick={handleJoin} disabled={loading}>{loading?"Joining...":"Join Room"}</button>
             </>
           )}
-          <div style={{textAlign:"center",color:"var(--textMuted)",fontSize:12,margin:"20px 0"}}>or</div>
-          <button style={{...S.btnG,width:"100%",padding:12}} onClick={()=>{
-            const url = window.location.origin+"?room="+roomCode;
-            navigator.clipboard?.writeText(url);
-          }}>🔗 Copy Invite Link</button>
         </div>
         <button style={{...S.btnG,marginTop:16,fontSize:13,border:"none",color:"var(--textMuted)"}} onClick={()=>go(SCREENS.LANDING)}>Back</button>
       </div>
