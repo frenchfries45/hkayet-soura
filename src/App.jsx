@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Supabase ───────────────────────────────────────────────────
@@ -410,6 +410,8 @@ function Game({ go, S, roomCode, myName }) {
   const nextStoryteller = PLAYER_LIST[(storytellerIdx+1)%Math.max(PLAYER_LIST.length,1)]||"";
   const phaseLabels  = ["Clue","Submit","Vote","Reveal"];
 
+  const deckRef = useRef([]);
+
   const loadBoard = async (currentRound) => {
     const r = currentRound||round;
     const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",r);
@@ -419,8 +421,15 @@ function Game({ go, S, roomCode, myName }) {
     const {data:ps}   = await supabase.from("room_players").select("name").eq("room_code",roomCode).eq("is_active",true);
     const stIdx = room?.storyteller_idx||0;
     const stName = ps?.[stIdx%Math.max(ps.length,1)]?.name||"";
+    // Fetch full card data from Supabase for each card_id on the board
+    const cardIds = plays.map(p=>p.card_id);
+    const {data:cardData} = await supabase.from("cards").select("*").in("id",cardIds);
+    const cardMap = {};
+    if(cardData) cardData.forEach(c=>{ cardMap[c.id]=c; });
+    // Also check fallback deck
+    FALLBACK_DECK.forEach(c=>{ if(!cardMap[c.id]) cardMap[c.id]=c; });
     const cards = plays.map(play=>{
-      const cd = FALLBACK_DECK.find(c=>c.id===play.card_id)||FALLBACK_DECK[0];
+      const cd = cardMap[play.card_id] || FALLBACK_DECK[0];
       return {...cd,owner:play.player_name,isStoryteller:play.player_name===stName,votes:vs?vs.filter(v=>v.voted_card_id===play.card_id).map(v=>v.voter_name):[]};
     });
     setBoardCards(shuffle(cards));
@@ -438,8 +447,9 @@ function Game({ go, S, roomCode, myName }) {
         setGameTab(room.phase>=2?"board":"hand");
       }
       const {data:cards} = await supabase.from("cards").select("*").eq("active",true);
-      const deck = (cards&&cards.length>=48)?cards:FALLBACK_DECK;
+      const deck = (cards&&cards.length>0)?cards:FALLBACK_DECK;
       const sdeck = shuffle(deck);
+      deckRef.current = sdeck; // store for loadBoard to use
       const pIdx = ps?ps.findIndex(p=>p.name===myName):0;
       const start = Math.max(pIdx,0)*6;
       setHandCards(sdeck.slice(start,start+6));
