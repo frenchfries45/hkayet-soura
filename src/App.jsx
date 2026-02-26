@@ -29,9 +29,9 @@ const THEMES = {
 function makeS(t) {
   return {
     root:{ fontFamily:"'DM Sans','Segoe UI',sans-serif",background:t.bg,color:t.text,minHeight:"100vh",display:"flex",flexDirection:"column" },
-    btnP:{ padding:"10px 24px",borderRadius:6,border:"none",background:t.gold,color:t.bg,fontWeight:700,fontSize:14,cursor:"pointer",fontFamily:"inherit" },
-    btnO:{ padding:"10px 24px",borderRadius:6,border:`1px solid ${t.gold}80`,background:"transparent",color:t.gold,fontWeight:500,fontSize:14,cursor:"pointer",fontFamily:"inherit" },
-    btnG:{ padding:"10px 24px",borderRadius:6,border:`1px solid ${t.text}25`,background:"transparent",color:t.text,fontSize:14,cursor:"pointer",fontFamily:"inherit" },
+    btnP:{ padding:"10px 24px",borderRadius:6,border:"none",background:t.gold,color:t.bg,fontWeight:700,fontSize:14,cursor:"pointer",fontFamily:"inherit",WebkitAppearance:"none",touchAction:"manipulation",userSelect:"none" },
+    btnO:{ padding:"10px 24px",borderRadius:6,border:`1px solid ${t.gold}80`,background:"transparent",color:t.gold,fontWeight:500,fontSize:14,cursor:"pointer",fontFamily:"inherit",WebkitAppearance:"none",touchAction:"manipulation",userSelect:"none" },
+    btnG:{ padding:"10px 24px",borderRadius:6,border:`1px solid ${t.text}25`,background:"transparent",color:t.text,fontSize:14,cursor:"pointer",fontFamily:"inherit",WebkitAppearance:"none",touchAction:"manipulation",userSelect:"none" },
     t,
   };
 }
@@ -140,7 +140,7 @@ function Landing({ go, S, themeName, setThemeName }) {
         <div style={{fontFamily:"Georgia,serif",fontSize:"clamp(48px,9vw,88px)",fontWeight:700,lineHeight:1,background:"linear-gradient(135deg,#C9952A,#E8C57A,#C4622D)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:8}}>Hkayet Soura</div>
         <p style={{fontSize:15,color:"color-mix(in srgb, var(--text) 60%, transparent)",lineHeight:1.8,margin:"0 auto 40px",maxWidth:420}}>A storytelling card game of imagination, intuition, and shared memory.</p>
         <div style={{display:"flex",gap:12,justifyContent:"center",alignItems:"center",marginBottom:32}}>
-          <button style={{...S.btnO,padding:"14px 20px",fontSize:14}} onClick={()=>go(SCREENS.LOBBY)}>Preview</button>
+          
           <button style={{...S.btnP,padding:"16px 48px",fontSize:17,borderRadius:8}} onClick={()=>go(SCREENS.LOBBY)}>Play Now</button>
           <button style={{...S.btnO,padding:"14px 20px",fontSize:14}} onClick={()=>setShowFaq(true)}>FAQ</button>
         </div>
@@ -527,13 +527,13 @@ function Game({ go, S, roomCode, myName }) {
           <button onClick={()=>setShowScores(v=>!v)} style={{...S.btnO,fontSize:10,padding:"4px 14px",borderRadius:20}}>
             {showScores?"Hide ▲":"Scores ▼"}
           </button>
-          <div style={{display:"flex",gap:6,flexShrink:0}}>
+          <div style={{display:"flex",gap:6,flexShrink:0,position:"relative",zIndex:10}}>
             {!confirmExit
-              ?<button style={{...S.btnG,fontSize:10,padding:"5px 10px"}} onClick={()=>setConfirmExit(true)}>Exit</button>
+              ?<button style={{...S.btnG,fontSize:10,padding:"8px 14px",minWidth:44,minHeight:36}} onClick={()=>setConfirmExit(true)}>Exit</button>
               :<div style={{display:"flex",gap:4,alignItems:"center"}}>
                 <span style={{fontSize:10,color:"var(--textMuted)"}}>Sure?</span>
-                <button style={{...S.btnP,fontSize:10,padding:"5px 10px"}} onClick={handleExit}>Yes</button>
-                <button style={{...S.btnG,fontSize:10,padding:"5px 10px"}} onClick={()=>setConfirmExit(false)}>No</button>
+                <button style={{...S.btnP,fontSize:11,padding:"8px 14px",minWidth:44,minHeight:36,background:"#C4622D"}} onClick={handleExit}>Yes, Exit</button>
+                <button style={{...S.btnG,fontSize:11,padding:"8px 14px",minWidth:44,minHeight:36}} onClick={()=>setConfirmExit(false)}>Cancel</button>
               </div>
             }
           </div>
