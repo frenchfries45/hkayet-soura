@@ -6,6 +6,115 @@ const SUPA_URL = import.meta.env.VITE_SUPABASE_URL  || "https://kdenyavpathupgzo
 const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_swXuHERnmpPafNqlCZwb4A_zBRnRjvK";
 const supabase = createClient(SUPA_URL, SUPA_KEY);
 
+
+// ── Sound Engine (Web Audio API — no dependencies) ────────────
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let _ctx = null;
+const getCtx = () => { if(!_ctx) _ctx = new AudioCtx(); return _ctx; };
+
+const sounds = {
+  // Card flip/select: soft thud
+  cardPick: () => {
+    const ctx = getCtx();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = "sine"; o.frequency.setValueAtTime(320, ctx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(180, ctx.currentTime+0.08);
+    g.gain.setValueAtTime(0.18, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.12);
+    o.start(); o.stop(ctx.currentTime+0.12);
+  },
+  // Submit card: satisfying click
+  cardSubmit: () => {
+    const ctx = getCtx();
+    [0, 0.05].forEach((delay, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = "sine";
+      o.frequency.setValueAtTime(i===0?440:560, ctx.currentTime+delay);
+      o.frequency.exponentialRampToValueAtTime(i===0?300:380, ctx.currentTime+delay+0.1);
+      g.gain.setValueAtTime(0.15, ctx.currentTime+delay);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+delay+0.15);
+      o.start(ctx.currentTime+delay); o.stop(ctx.currentTime+delay+0.15);
+    });
+  },
+  // Clue given: warm chime
+  clueGiven: () => {
+    const ctx = getCtx();
+    [523, 659, 784].forEach((freq, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = "triangle"; o.frequency.value = freq;
+      g.gain.setValueAtTime(0, ctx.currentTime+i*0.1);
+      g.gain.linearRampToValueAtTime(0.12, ctx.currentTime+i*0.1+0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+i*0.1+0.5);
+      o.start(ctx.currentTime+i*0.1); o.stop(ctx.currentTime+i*0.1+0.5);
+    });
+  },
+  // Vote cast: gentle pop
+  vote: () => {
+    const ctx = getCtx();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = "sine"; o.frequency.setValueAtTime(600, ctx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(400, ctx.currentTime+0.1);
+    g.gain.setValueAtTime(0.12, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.15);
+    o.start(); o.stop(ctx.currentTime+0.15);
+  },
+  // Cards revealed: dramatic whoosh + chord
+  reveal: () => {
+    const ctx = getCtx();
+    // whoosh
+    const buf = ctx.createBuffer(1, ctx.sampleRate*0.4, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for(let i=0;i<data.length;i++) data[i]=(Math.random()*2-1)*Math.pow(1-i/data.length,2)*0.3;
+    const src = ctx.createBufferSource(), gw = ctx.createGain();
+    src.buffer=buf; src.connect(gw); gw.connect(ctx.destination);
+    gw.gain.setValueAtTime(0.4,ctx.currentTime);
+    gw.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.4);
+    src.start();
+    // chord
+    [392, 494, 587].forEach((freq, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = "triangle"; o.frequency.value = freq;
+      g.gain.setValueAtTime(0, ctx.currentTime+0.1+i*0.05);
+      g.gain.linearRampToValueAtTime(0.1, ctx.currentTime+0.15+i*0.05);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.9);
+      o.start(ctx.currentTime+0.1+i*0.05); o.stop(ctx.currentTime+0.9);
+    });
+  },
+  // Score/win: celebratory fanfare
+  score: () => {
+    const ctx = getCtx();
+    [523,659,784,1047].forEach((freq,i)=>{
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = "triangle"; o.frequency.value = freq;
+      g.gain.setValueAtTime(0, ctx.currentTime+i*0.08);
+      g.gain.linearRampToValueAtTime(0.13, ctx.currentTime+i*0.08+0.03);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+i*0.08+0.6);
+      o.start(ctx.currentTime+i*0.08); o.stop(ctx.currentTime+i*0.08+0.6);
+    });
+  },
+  // New round: soft bell reset
+  newRound: () => {
+    const ctx = getCtx();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = "sine"; o.frequency.setValueAtTime(880, ctx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(440, ctx.currentTime+0.3);
+    g.gain.setValueAtTime(0.1, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.5);
+    o.start(); o.stop(ctx.currentTime+0.5);
+  },
+};
+
+// Global mute state (outside React so it survives re-renders)
+let _soundOn = true;
+const play = (name) => { if(_soundOn && sounds[name]) { try { sounds[name](); } catch(e){} } };
+
 const SCREENS = { LANDING:"landing", LOBBY:"lobby", WAITING:"waiting", GAME:"game" };
 
 // ── Themes ────────────────────────────────────────────────────
@@ -135,6 +244,31 @@ function CardFace({ card, size = "large", label = null, highlight = false, voteC
         <div style={{ position:"absolute", top:10, right:10, fontSize:12, fontWeight:700, color:"#7AC87A", background:"rgba(30,60,30,0.9)", borderRadius:8, padding:"2px 8px" }}>+{voteCount}</div>
       )}
     </div>
+  );
+}
+
+// ── Sound Toggle ──────────────────────────────────────────────
+function SoundToggle() {
+  const [on, setOn] = useState(true);
+  const toggle = () => {
+    _soundOn = !_soundOn;
+    setOn(_soundOn);
+    if(_soundOn) play("cardPick");
+  };
+  return (
+    <button
+      onClick={toggle}
+      title={on?"Mute sounds":"Enable sounds"}
+      style={{
+        background:"transparent", border:"1px solid rgba(201,149,42,0.3)",
+        borderRadius:8, cursor:"pointer", padding:"6px 10px",
+        fontSize:16, lineHeight:1, minWidth:36, minHeight:36,
+        color: on ? "#C9952A" : "#7A6E62",
+        transition:"all 0.2s",
+      }}
+    >
+      {on ? "🔊" : "🔇"}
+    </button>
   );
 }
 
@@ -423,6 +557,69 @@ function Game({ go, S, roomCode, myName }) {
 
   const deckRef = useRef([]);
 
+  // ── Hand dealing (server-authoritative) ───────────────────────
+  // hands stored in rooms.dealt_hands as JSON: { playerName: [cardId,...] }
+  // used_cards stored in rooms.used_cards as JSON: [cardId,...]
+  const loadOrDealHand = async (fullDeck, playerList, currentRound, room) => {
+    // Parse existing dealt hands from room
+    let dealtHands = {};
+    let usedCards = [];
+    try { dealtHands = JSON.parse(room?.dealt_hands||"{}"); } catch(e){}
+    try { usedCards  = JSON.parse(room?.used_cards||"[]");  } catch(e){}
+
+    // If I already have a hand dealt, just restore it
+    if (dealtHands[myName] && dealtHands[myName].length > 0) {
+      const myCardIds = dealtHands[myName];
+      const cardMap = {};
+      fullDeck.forEach(c => { cardMap[c.id] = c; });
+      const hand = myCardIds.map(id => cardMap[id]).filter(Boolean);
+      if (hand.length > 0) { setHandCards(hand); return; }
+    }
+
+    // Only the first player alphabetically does the deal to avoid race conditions
+    const sortedNames = [...playerList.map(p=>p.name)].sort();
+    const isDealer = sortedNames[0] === myName;
+    if (!isDealer) {
+      // Wait up to 5s for dealer to write hands, then reload
+      await new Promise(r => setTimeout(r, 2500));
+      const {data:freshRoom} = await supabase.from("rooms").select("dealt_hands,used_cards").eq("code",roomCode).single();
+      let freshHands = {};
+      try { freshHands = JSON.parse(freshRoom?.dealt_hands||"{}"); } catch(e){}
+      if (freshHands[myName]?.length > 0) {
+        const cardMap = {};
+        fullDeck.forEach(c => { cardMap[c.id] = c; });
+        const hand = freshHands[myName].map(id => cardMap[id]).filter(Boolean);
+        if (hand.length > 0) { setHandCards(hand); return; }
+      }
+    }
+
+    // Deal fresh hands for all players
+    // Cards already played in previous rounds cannot be reused unless deck is exhausted
+    const allPlayedIds = new Set(usedCards);
+    let available = fullDeck.filter(c => !allPlayedIds.has(c.id));
+    // If not enough cards, reset used pool (deck exhausted)
+    const needed = playerList.length * 6;
+    if (available.length < needed) available = [...fullDeck];
+    const shuffled = shuffle(available);
+
+    const newHands = {};
+    playerList.forEach((p, i) => {
+      newHands[p.name] = shuffled.slice(i * 6, i * 6 + 6).map(c => c.id);
+    });
+
+    // Save dealt hands to room
+    await supabase.from("rooms").update({
+      dealt_hands: JSON.stringify(newHands),
+    }).eq("code", roomCode);
+
+    // Set my hand
+    const cardMap = {};
+    fullDeck.forEach(c => { cardMap[c.id] = c; });
+    const myCardIds = newHands[myName] || [];
+    const hand = myCardIds.map(id => cardMap[id]).filter(Boolean);
+    setHandCards(hand);
+  };
+
   const loadBoard = async (currentRound) => {
     const r = currentRound||round;
     const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",r);
@@ -461,28 +658,25 @@ function Game({ go, S, roomCode, myName }) {
         if(room.clue) setConfirmedClue(room.clue);
         setGameTab(room.phase>=2?"board":"hand");
       }
-      const {data:cards, error:cardErr} = await supabase.from("cards").select("*").eq("active",true);
-      console.log("[Hkayet] cards fetch:", cards?.length, "error:", cardErr);
-      // Give each real card a fallback bg in case image fails
+      const {data:cards} = await supabase.from("cards").select("*").eq("active",true);
       const BG_POOL = [
         "linear-gradient(145deg,#2A1A0A,#7A4010)","linear-gradient(145deg,#1E2D1E,#3A5E2A)",
         "linear-gradient(145deg,#0D1F2D,#1A4060)","linear-gradient(145deg,#2A2A1A,#6A6A20)",
         "linear-gradient(145deg,#1A1A2D,#3A3A6B)","linear-gradient(145deg,#2D1A2D,#6B2060)",
         "linear-gradient(145deg,#3D2B1F,#7A4A30)","linear-gradient(145deg,#1A2010,#4A6020)",
       ];
-      const realCards = cards ? cards.map((c,i)=>({ ...c, bg: c.bg || BG_POOL[i%BG_POOL.length], emoji: c.emoji || "🎴" })) : [];
-      const deck = realCards.length>0 ? realCards : FALLBACK_DECK;
-      const sdeck = shuffle(deck);
-      deckRef.current = sdeck;
-      const pIdx = ps?ps.findIndex(p=>p.name===myName):0;
-      const start = Math.max(pIdx,0)*6;
-      setHandCards(sdeck.slice(start,start+6));
+      const realCards = cards ? cards.map((c,i)=>({...c,bg:c.bg||BG_POOL[i%BG_POOL.length],emoji:c.emoji||"🎴"})) : [];
+      const fullDeck = realCards.length>0 ? realCards : FALLBACK_DECK;
+      deckRef.current = fullDeck;
+
+      // Load dealt hands from DB (server-authoritative)
+      const myHand = await loadOrDealHand(fullDeck, ps||[], room?.round||1, room);
       await loadBoard(room?.round||1);
       const {data:myPlay} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",room?.round||1).eq("player_name",myName).single();
       if(myPlay) setSubmittedCardId(myPlay.card_id);
       const {data:myVote} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",room?.round||1).eq("voter_name",myName).single();
       if(myVote){setVoteConfirmed(true);}
-      setDebugMsg(deck.length + " cards loaded from " + (realCards.length>0?"Supabase":"fallback deck"));
+      setDebugMsg(fullDeck.length + " cards loaded from " + (realCards.length>0?"Supabase":"fallback deck"));
       setLoading(false);
     };
     init();
@@ -495,6 +689,12 @@ function Game({ go, S, roomCode, myName }) {
         if(r.clue) setConfirmedClue(r.clue); else setConfirmedClue("");
         setGameTab(r.phase>=2?"board":r.phase===0?"hand":gameTab);
         await loadBoard(r.round);
+        // If dealt_hands reset (new round), re-deal for this player
+        if(r.dealt_hands==="{}" || r.dealt_hands==null) {
+          const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
+          setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setBoardCards([]);setSelHand(0);
+          await loadOrDealHand(deckRef.current, ps||[], r.round, r);
+        }
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"card_plays",filter:`room_code=eq.${roomCode}`},()=>loadBoard())
       .on("postgres_changes",{event:"*",schema:"public",table:"votes",filter:`room_code=eq.${roomCode}`},()=>loadBoard())
@@ -511,6 +711,7 @@ function Game({ go, S, roomCode, myName }) {
     if(!clueText.trim()) return;
     const card = handCards[selHand];
     if(!card) return;
+    play("clueGiven");
     await supabase.from("rooms").update({clue:clueText.trim(),phase:1}).eq("code",roomCode);
     const {data:existing} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round).eq("player_name",myName).single();
     if(!existing) await supabase.from("card_plays").insert({room_code:roomCode,round,player_name:myName,card_id:card.id});
@@ -521,6 +722,7 @@ function Game({ go, S, roomCode, myName }) {
   const submitCard = async ()=>{
     const card = handCards[selHand];
     if(!card||submittedCardId) return;
+    play("cardSubmit");
     const {data:existing} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round).eq("player_name",myName).single();
     if(existing){setSubmittedCardId(existing.card_id);return;}
     await supabase.from("card_plays").insert({room_code:roomCode,round,player_name:myName,card_id:card.id});
@@ -533,6 +735,7 @@ function Game({ go, S, roomCode, myName }) {
     if(boardOverlay===null) return;
     const card = boardCards[boardOverlay];
     if(!card||card.owner===myName) return;
+    play("vote");
     const {data:existing} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",round).eq("voter_name",myName).single();
     if(existing) return;
     await supabase.from("votes").insert({room_code:roomCode,round,voter_name:myName,voted_card_id:card.id});
@@ -543,6 +746,7 @@ function Game({ go, S, roomCode, myName }) {
   };
 
   const endRound = async ()=>{
+    play("reveal");
     const storytellerCard = boardCards.find(c=>c.isStoryteller);
     const correctVoters   = storytellerCard?storytellerCard.votes:[];
     const nonST = PLAYER_LIST.filter(p=>p!==STORYTELLER);
@@ -561,13 +765,34 @@ function Game({ go, S, roomCode, myName }) {
     setScores(newScores);
     for(const s of newScores) await supabase.from("room_players").update({score:s.score}).eq("room_code",roomCode).eq("name",s.name);
     const top = Math.max(...newScores.map(s=>s.score));
-    if(top>=WIN_TARGET) setWinner({names:newScores.filter(s=>s.score===top).map(w=>w.name),scores:newScores,topScore:top});
+    play("score");
+    if(top>=WIN_TARGET) { play("score"); setTimeout(()=>play("score"),400); setWinner({names:newScores.filter(s=>s.score===top).map(w=>w.name),scores:newScores,topScore:top}); }
   };
 
   const nextRound = async ()=>{
+    play("newRound");
     const newIdx = storytellerIdx+1;
-    setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setBoardCards([]);
-    await supabase.from("rooms").update({phase:0,round:round+1,storyteller_idx:newIdx,clue:null}).eq("code",roomCode);
+    const newRound = round+1;
+    setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setBoardCards([]);setSelHand(0);
+
+    // Mark all played cards this round as used so they won't be redealt
+    const {data:plays} = await supabase.from("card_plays").select("card_id").eq("room_code",roomCode).eq("round",round);
+    const {data:currentRoom} = await supabase.from("rooms").select("used_cards,dealt_hands").eq("code",roomCode).single();
+    let usedCards = [];
+    try { usedCards = JSON.parse(currentRoom?.used_cards||"[]"); } catch(e){}
+    if(plays) plays.forEach(p=>{ if(!usedCards.includes(p.card_id)) usedCards.push(p.card_id); });
+
+    // Deal new hands for next round (reset dealt_hands so loadOrDealHand re-deals)
+    await supabase.from("rooms").update({
+      phase:0, round:newRound, storyteller_idx:newIdx, clue:null,
+      used_cards: JSON.stringify(usedCards),
+      dealt_hands: "{}",
+    }).eq("code",roomCode);
+
+    // Re-deal my hand immediately
+    const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
+    const {data:freshRoom} = await supabase.from("rooms").select("*").eq("code",roomCode).single();
+    await loadOrDealHand(deckRef.current, ps||[], newRound, freshRoom);
   };
 
   const handleExit = async ()=>{
@@ -604,7 +829,8 @@ function Game({ go, S, roomCode, myName }) {
           <button onClick={()=>setShowScores(v=>!v)} style={{...S.btnO,fontSize:10,padding:"4px 14px",borderRadius:20}}>
             {showScores?"Hide ▲":"Scores ▼"}
           </button>
-          <div style={{display:"flex",gap:6,flexShrink:0,position:"relative",zIndex:10}}>
+          <div style={{display:"flex",gap:6,flexShrink:0,position:"relative",zIndex:10,alignItems:"center"}}>
+            <SoundToggle/>
             {!confirmExit
               ?<button style={{...S.btnG,fontSize:10,padding:"8px 14px",minWidth:44,minHeight:36}} onClick={()=>setConfirmExit(true)}>Exit</button>
               :<div style={{display:"flex",gap:4,alignItems:"center"}}>
@@ -672,7 +898,7 @@ function Game({ go, S, roomCode, myName }) {
             </div>
             <div style={{display:"flex",gap:8,overflowX:"auto",padding:"4px 0",maxWidth:"100%"}}>
               {handCards.map((c,i)=>(
-                <div key={i} onClick={()=>{setSelHand(i);if(phase===0&&isStoryteller)setFocusedHand(i);else setFullscreen({type:"hand",idx:i});}} style={{cursor:"pointer",flexShrink:0,transform:selHand===i?"translateY(-4px)":"none",transition:"transform 0.2s",outline:selHand===i?"2px solid #C9952A":"none",borderRadius:8,boxShadow:selHand===i?"0 4px 18px rgba(201,149,42,0.35)":"none"}}>
+                <div key={i} onClick={()=>{play("cardPick");setSelHand(i);if(phase===0&&isStoryteller)setFocusedHand(i);else setFullscreen({type:"hand",idx:i});}} style={{cursor:"pointer",flexShrink:0,transform:selHand===i?"translateY(-4px)":"none",transition:"transform 0.2s",outline:selHand===i?"2px solid #C9952A":"none",borderRadius:8,boxShadow:selHand===i?"0 4px 18px rgba(201,149,42,0.35)":"none"}}>
                   <CardFace card={c} size="mini" />
                   <div style={{textAlign:"center",fontSize:9,color:selHand===i?"var(--gold)":"var(--textMuted)",fontWeight:700,marginTop:2}}>{i+1}</div>
                 </div>
