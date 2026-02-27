@@ -717,9 +717,9 @@ function Game({ go, S, roomCode, myName }) {
     const {data:vs}   = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",r);
     // Single rooms query for both storyteller_idx and phase (avoids race between two queries)
     const {data:room} = await supabase.from("rooms").select("storyteller_idx,phase").eq("code",roomCode).single();
-    const {data:ps}   = await supabase.from("room_players").select("name,id").eq("room_code",roomCode).eq("is_active",true);
-    // Sort players by join order (id) to get stable list for storyteller resolution
-    const sortedPs = ps ? [...ps].sort((a,b)=>(a.id||0)-(b.id||0)) : [];
+    const {data:ps}   = await supabase.from("room_players").select("name,id,created_at").eq("room_code",roomCode).eq("is_active",true);
+    // Sort players by join time (created_at) to get stable insertion-order list
+    const sortedPs = ps ? [...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)) : [];
     const stIdx = room?.storyteller_idx||0;
     const stName = sortedPs[stIdx%Math.max(sortedPs.length,1)]?.name||"";
     const currentPhase = room?.phase ?? 0;
@@ -742,6 +742,7 @@ function Game({ go, S, roomCode, myName }) {
         ...cd,
         owner: currentPhase>=3 ? play.player_name : "?",
         isStoryteller: currentPhase>=3 ? isStCard : false,
+        isMyCard: play.player_name === myName, // safe: only used client-side to block own vote
         votes: vs ? vs.filter(v=>v.voted_card_id===play.card_id).map(v=>v.voter_name) : [],
       };
     });
@@ -752,7 +753,7 @@ function Game({ go, S, roomCode, myName }) {
     if(!roomCode) return;
     const init = async ()=>{
       const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-      if(ps){ const sorted=[...ps].sort((a,b)=>(a.id||0)-(b.id||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score}))); }
+      if(ps){ const sorted=[...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score}))); }
       const {data:room} = await supabase.from("rooms").select("*").eq("code",roomCode).single();
       if(room){
         setPhase(room.phase);setRound(room.round);setStorytellerIdx(room.storyteller_idx);
@@ -805,18 +806,24 @@ function Game({ go, S, roomCode, myName }) {
         // Deterministic tab: board for voting/reveal, hand otherwise
         setGameTab(r.phase>=2?"board":"hand");
         await loadBoard(r.round);
-        // If dealt_hands reset (new round), re-deal for this player
-        if(r.dealt_hands==="{}" || r.dealt_hands==null) {
-          const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-          setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setConfirmedClue("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);setGameTab("hand");
-          await loadOrDealHand(deckRef.current, ps||[], r.round, r);
+        // New round: restore updated hand from dealt_hands (storyteller already replaced played cards)
+        if(r.round!==round && r.dealt_hands && r.dealt_hands!=="{}") {
+          let newHands={};
+          try { newHands=JSON.parse(r.dealt_hands); } catch(e){}
+          if(newHands[myName]?.length>0){
+            const cardMap={};
+            deckRef.current.forEach(c=>{cardMap[c.id]=c;});
+            const hand=newHands[myName].map(id=>cardMap[id]).filter(Boolean);
+            if(hand.length>0) setHandCards(hand);
+          }
+          setSelHand(0);setClueText("");setConfirmedClue("");setGameTab("hand");
         }
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"card_plays",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||round); })
       .on("postgres_changes",{event:"*",schema:"public",table:"votes",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||round); })
       .on("postgres_changes",{event:"*",schema:"public",table:"room_players",filter:`room_code=eq.${roomCode}`},async()=>{
         const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-        if(ps){ const sorted=[...ps].sort((a,b)=>(a.id||0)-(b.id||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score})));if(ps.length<3)setGameDisbanded(true);}
+        if(ps){ const sorted=[...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score})));if(ps.length<3)setGameDisbanded(true);}
       })
       .subscribe();
     return ()=>{ supabase.removeChannel(ch); supabase.removeChannel(presenceCh); };
@@ -856,8 +863,8 @@ function Game({ go, S, roomCode, myName }) {
     if(!card) return;
     // Storyteller cannot vote
     if(isStoryteller) return;
-    // Check own card via submitted card_id (owner field is "?" in phase 2)
-    if(card.id===submittedCardId) return;
+    // Block own card: use isMyCard flag (set in loadBoard from player_name) or card_id match
+    if(card.isMyCard || card.id===submittedCardId) return;
     play("vote");
     const {data:existing} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",round).eq("voter_name",myName).single();
     if(existing) return;
@@ -875,9 +882,9 @@ function Game({ go, S, roomCode, myName }) {
     const {data:freshPlays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round);
     const {data:freshVotes} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",round);
     const {data:freshRoom}  = await supabase.from("rooms").select("storyteller_idx").eq("code",roomCode).single();
-    const {data:freshPs}    = await supabase.from("room_players").select("name").eq("room_code",roomCode).eq("is_active",true);
+    const {data:freshPs}    = await supabase.from("room_players").select("name,created_at").eq("room_code",roomCode).eq("is_active",true);
     const stIdx2 = freshRoom?.storyteller_idx||0;
-    const sortedFreshPs = freshPs ? [...freshPs].sort((a,b)=>(a.id||0)-(b.id||0)) : [];
+    const sortedFreshPs = freshPs ? [...freshPs].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)) : [];
     const stName2 = sortedFreshPs[stIdx2%Math.max(sortedFreshPs.length,1)]?.name||"";
     const stPlay = freshPlays?.find(p=>p.player_name===stName2);
     const correctVoters = stPlay ? (freshVotes||[]).filter(v=>v.voted_card_id===stPlay.card_id).map(v=>v.voter_name) : [];
@@ -911,24 +918,63 @@ function Game({ go, S, roomCode, myName }) {
     const newRound = round+1;
     setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setConfirmedClue("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);setGameTab("hand");
 
-    // Mark all played cards this round as used so they won't be redealt
-    const {data:plays} = await supabase.from("card_plays").select("card_id").eq("room_code",roomCode).eq("round",round);
+    // Fetch played cards this round and current room state
+    const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round);
     const {data:currentRoom} = await supabase.from("rooms").select("used_cards,dealt_hands").eq("code",roomCode).single();
     let usedCards = [];
-    try { usedCards = JSON.parse(currentRoom?.used_cards||"[]"); } catch(e){}
+    let dealtHands = {};
+    try { usedCards  = JSON.parse(currentRoom?.used_cards||"[]");  } catch(e){}
+    try { dealtHands = JSON.parse(currentRoom?.dealt_hands||"{}"); } catch(e){}
+
+    // Mark played cards as used
     if(plays) plays.forEach(p=>{ if(!usedCards.includes(p.card_id)) usedCards.push(p.card_id); });
 
-    // Deal new hands for next round (reset dealt_hands so loadOrDealHand re-deals)
+    // Build set of all cards currently in any hand so we don't re-deal them
+    const allHandCardIds = new Set();
+    Object.values(dealtHands).forEach(ids => ids.forEach(id => allHandCardIds.add(id)));
+
+    // Pick pool of replacement cards: not used and not currently in any hand
+    const usedSet = new Set(usedCards);
+    let available = deckRef.current.filter(c => !usedSet.has(c.id) && !allHandCardIds.has(c.id));
+    // If pool is too small, fall back to just not-in-hand
+    if (available.length < (plays?.length||0)) available = deckRef.current.filter(c => !allHandCardIds.has(c.id));
+    // Last resort: use full deck
+    if (available.length < (plays?.length||0)) available = [...deckRef.current];
+    const replacements = shuffle(available);
+    let replIdx = 0;
+
+    // For each player, replace only the card they played with a new one
+    const newDealtHands = {...dealtHands};
+    const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
+    (ps||[]).forEach(p => {
+      const playedCard = plays?.find(pl=>pl.player_name===p.name);
+      if (!playedCard) return; // player didn't submit — keep hand as-is
+      const currentHand = newDealtHands[p.name] || [];
+      const playedIdx = currentHand.indexOf(playedCard.card_id);
+      if (playedIdx === -1) {
+        // Card not found in hand (edge case) — just append new card
+        newDealtHands[p.name] = [...currentHand, replacements[replIdx++]?.id].filter(Boolean);
+      } else {
+        // Replace the played card with a new one in the same slot
+        const newHand = [...currentHand];
+        newHand[playedIdx] = replacements[replIdx++]?.id || currentHand[playedIdx];
+        newDealtHands[p.name] = newHand;
+      }
+    });
+
+    // Save updated hands and advance round
     await supabase.from("rooms").update({
       phase:0, round:newRound, storyteller_idx:newIdx, clue:null,
       used_cards: JSON.stringify(usedCards),
-      dealt_hands: "{}",
+      dealt_hands: JSON.stringify(newDealtHands),
     }).eq("code",roomCode);
 
-    // Re-deal my hand immediately
-    const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-    const {data:freshRoom} = await supabase.from("rooms").select("*").eq("code",roomCode).single();
-    await loadOrDealHand(deckRef.current, ps||[], newRound, freshRoom);
+    // Restore my hand immediately from new dealt_hands
+    const cardMap = {};
+    deckRef.current.forEach(c => { cardMap[c.id] = c; });
+    const myNewIds = newDealtHands[myName] || [];
+    const myNewHand = myNewIds.map(id => cardMap[id]).filter(Boolean);
+    if (myNewHand.length > 0) setHandCards(myNewHand);
   };
 
   const handleExit = async ()=>{
@@ -1092,7 +1138,7 @@ function Game({ go, S, roomCode, myName }) {
                   {phase===2&&!voteConfirmed&&(
                     isStoryteller
                       ? <div style={{fontSize:13,color:"var(--textMuted)",padding:"10px",textAlign:"center"}}>You're the Storyteller — you don't vote this round</div>
-                      : activeBoardCard.id===submittedCardId
+                      : (activeBoardCard.isMyCard||activeBoardCard.id===submittedCardId)
                         ? <div style={{fontSize:13,color:"var(--textMuted)",padding:"10px",textAlign:"center"}}>This is your card — you can't vote for it</div>
                         : <button style={{...S.btnP,padding:"13px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320}} onClick={()=>setBoardOverlay(focusedBoard)}>Vote for this card</button>
                   )}
@@ -1150,7 +1196,7 @@ function Game({ go, S, roomCode, myName }) {
             {phase===2&&(
               isStoryteller
                 ? <div style={{fontSize:13,color:"var(--textMuted)",textAlign:"center",padding:"10px"}}>You're the Storyteller — you don't vote this round</div>
-                : boardCards[boardOverlay]?.id===submittedCardId
+                : (boardCards[boardOverlay]?.isMyCard||boardCards[boardOverlay]?.id===submittedCardId)
                   ? <div style={{fontSize:13,color:"#C4622D",textAlign:"center",padding:"10px"}}>This is your card — you can't vote for it</div>
                   : <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%"}} onClick={confirmVote}>Confirm Vote</button>
             )}
