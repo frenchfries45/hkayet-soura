@@ -588,6 +588,7 @@ function Game({ go, S, roomCode, myName }) {
   const [winner, setWinner]             = useState(null);
   const [roundDeltas, setRoundDeltas]   = useState(null);
   const [gameDisbanded, setGameDisbanded] = useState(false);
+  const [onlinePlayers, setOnlinePlayers] = useState({});
   const [players, setPlayers]           = useState([]);
   const [scores, setScores]             = useState([]);
   const [storytellerIdx, setStorytellerIdx] = useState(0);
@@ -691,9 +692,19 @@ function Game({ go, S, roomCode, myName }) {
     const cardMap = {};
     if(cardData) cardData.forEach((c,i)=>{ cardMap[c.id]={ ...c, bg: c.bg||BG_POOL2[i%BG_POOL2.length], emoji: c.emoji||"🎴" }; });
     FALLBACK_DECK.forEach(c=>{ if(!cardMap[c.id]) cardMap[c.id]=c; });
+    // Fetch current phase to know whether to reveal storyteller identity
+    const {data:phaseData} = await supabase.from("rooms").select("phase").eq("code",roomCode).single();
+    const currentPhase = phaseData?.phase ?? 0;
     const cards = plays.map(play=>{
       const cd = cardMap[play.card_id] || FALLBACK_DECK[0];
-      return {...cd,owner:play.player_name,isStoryteller:play.player_name===stName,votes:vs?vs.filter(v=>v.voted_card_id===play.card_id).map(v=>v.voter_name):[]};
+      // Only expose isStoryteller flag in reveal phase (3)
+      const isStCard = play.player_name===stName;
+      return {
+        ...cd,
+        owner: currentPhase>=3 ? play.player_name : "?",
+        isStoryteller: currentPhase>=3 ? isStCard : false,
+        votes: vs ? vs.filter(v=>v.voted_card_id===play.card_id).map(v=>v.voter_name) : [],
+      };
     });
     setBoardCards(shuffle(cards));
   };
@@ -732,6 +743,19 @@ function Game({ go, S, roomCode, myName }) {
     };
     init();
 
+    // Presence tracking
+    const presenceCh = supabase.channel(`presence:${roomCode}`, {config:{presence:{key:myName}}});
+    presenceCh
+      .on("presence",{event:"sync"},()=>{
+        const state = presenceCh.presenceState();
+        const online = {};
+        Object.keys(state).forEach(key=>{ online[key]=true; });
+        setOnlinePlayers(online);
+      })
+      .subscribe(async(status)=>{
+        if(status==="SUBSCRIBED") await presenceCh.track({name:myName, online_at:new Date().toISOString()});
+      });
+
     const ch = supabase.channel(`game:${roomCode}`)
       .on("postgres_changes",{event:"UPDATE",schema:"public",table:"rooms",filter:`code=eq.${roomCode}`},async(payload)=>{
         const r=payload.new;
@@ -754,7 +778,7 @@ function Game({ go, S, roomCode, myName }) {
         if(ps){setPlayers(ps);setScores(ps.map(p=>({name:p.name,score:p.score})));if(ps.length<3)setGameDisbanded(true);}
       })
       .subscribe();
-    return ()=>supabase.removeChannel(ch);
+    return ()=>{ supabase.removeChannel(ch); supabase.removeChannel(presenceCh); };
   },[roomCode,myName]);
 
   // ── Actions ─────────────────────────────────────────────────
@@ -1133,6 +1157,19 @@ function Game({ go, S, roomCode, myName }) {
           </div>
         </div>
       )}
+      {/* CONNECTIVITY BAR */}
+      <div style={{flexShrink:0,borderTop:"1px solid color-mix(in srgb, var(--gold) 8%, transparent)",background:"var(--headerBg)",padding:"6px 16px",display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}}>
+        <span style={{fontSize:9,letterSpacing:2,textTransform:"uppercase",color:"var(--textMuted)",marginRight:4}}>Players</span>
+        {scores.map(p=>{
+          const isOnline = onlinePlayers[p.name] || false;
+          return (
+            <div key={p.name} style={{display:"flex",alignItems:"center",gap:5}}>
+              <div style={{width:7,height:7,borderRadius:"50%",background:isOnline?"#4CAF50":"#C4622D",boxShadow:isOnline?"0 0 6px #4CAF5088":"none",flexShrink:0,transition:"all 0.5s"}}/>
+              <span style={{fontSize:11,color:isOnline?"var(--text)":"var(--textMuted)",fontWeight:p.name===myName?600:400}}>{p.name}{p.name===myName?" (you)":""}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
