@@ -626,6 +626,7 @@ function Game({ go, S, roomCode, myName }) {
   const [submittedCardId, setSubmittedCardId] = useState(null);
   const [loading, setLoading]           = useState(true);
   const [debugMsg, setDebugMsg]         = useState("");
+  const [endRoundLoading, setEndRoundLoading] = useState(false);
 
   const PLAYER_LIST  = players.map(p=>p.name);
   // WIN_TARGET: use loaded player count; fall back to 30 (safe) before players load
@@ -880,13 +881,18 @@ function Game({ go, S, roomCode, myName }) {
   };
 
   const endRound = async ()=>{
+    if(endRoundLoading) return; // prevent double-click
+    setEndRoundLoading(true);
     play("reveal");
+    try {
     // Fetch ALL fresh data from DB — never use stale React state for scoring
-    const {data:freshPlays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
-    const {data:freshVotes} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
-    const {data:freshRoom}  = await supabase.from("rooms").select("storyteller_idx").eq("code",roomCode).single();
-    const {data:freshPs}    = await supabase.from("room_players").select("name,score,created_at").eq("room_code",roomCode).eq("is_active",true);
-    if(!freshPlays||!freshVotes||!freshRoom||!freshPs) return;
+    const {data:freshPlays, error:e1} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
+    const {data:freshVotes, error:e2} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
+    const {data:freshRoom,  error:e3} = await supabase.from("rooms").select("storyteller_idx").eq("code",roomCode).single();
+    const {data:freshPs,    error:e4} = await supabase.from("room_players").select("name,score,created_at").eq("room_code",roomCode).eq("is_active",true);
+    if(e1||e2||e3||e4||!freshPlays||!freshRoom||!freshPs) { setEndRoundLoading(false); return; }
+    // freshVotes can be empty array (valid: nobody voted yet or 0 votes) — treat null as []
+    const votes = freshVotes || [];
 
     // Resolve storyteller from fresh sorted player list
     const sortedFreshPs = [...freshPs].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0));
@@ -898,7 +904,7 @@ function Game({ go, S, roomCode, myName }) {
     // Find storyteller card and who voted for it
     const stPlay = freshPlays.find(p=>p.player_name===stName2);
     const correctVoters = stPlay
-      ? freshVotes.filter(v=>v.voted_card_id===stPlay.card_id).map(v=>v.voter_name)
+      ? votes.filter(v=>v.voted_card_id===stPlay.card_id).map(v=>v.voter_name)
       : [];
 
     // Score calculation (Dixit rules)
@@ -916,7 +922,7 @@ function Game({ go, S, roomCode, myName }) {
     }
     // Bonus: +1 per vote on any non-storyteller card
     freshPlays.filter(p=>p.player_name!==stName2).forEach(p=>{
-      const voteCount = freshVotes.filter(v=>v.voted_card_id===p.card_id).length;
+      const voteCount = votes.filter(v=>v.voted_card_id===p.card_id).length;
       if(voteCount>0) deltas[p.player_name]=(deltas[p.player_name]||0)+voteCount;
     });
 
@@ -936,6 +942,8 @@ function Game({ go, S, roomCode, myName }) {
       play("score"); setTimeout(()=>play("score"),400);
       setWinner({names:newScores.filter(s=>s.score===top).map(w=>w.name),scores:newScores,topScore:top});
     }
+    } catch(err){ console.error("endRound error:", err); }
+    finally { setEndRoundLoading(false); }
   };
 
   const nextRound = async ()=>{
@@ -1208,7 +1216,7 @@ function Game({ go, S, roomCode, myName }) {
                     ))}
                   </div>
                   {phase===3&&isStoryteller&&!roundDeltas&&(
-                    <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320}} onClick={endRound}>End Round and See Scores</button>
+                    <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320,opacity:endRoundLoading?0.6:1,cursor:endRoundLoading?"wait":"pointer"}} onClick={endRound} disabled={endRoundLoading}>{endRoundLoading?"Calculating scores...":"End Round and See Scores"}</button>
                   )}
                   {phase===3&&!isStoryteller&&!roundDeltas&&(
                     <div style={{textAlign:"center",fontSize:12,color:"var(--textMuted)",padding:"10px"}}>Waiting for {STORYTELLER} to reveal the scores...</div>
