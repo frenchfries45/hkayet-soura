@@ -1026,7 +1026,7 @@ function Game({ go, S, roomCode, myName }) {
               {activeBoardCard&&(
                 <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
                   <div onClick={()=>setFullscreen({type:"board",idx:focusedBoard})} style={{cursor:"pointer",position:"relative"}}>
-                    {phase<3
+                    {phase===1
                       ? <FaceDown size="large"/>
                       : <CardFace card={activeBoardCard} size="large"
                           highlight={activeBoardCard.isStoryteller&&phase===3}
@@ -1034,16 +1034,18 @@ function Game({ go, S, roomCode, myName }) {
                         />
                     }
                   </div>
-                  {/* Owner label OUTSIDE card, only in reveal phase */}
+
                   {phase===3&&(
-                    <div style={{textAlign:"center",marginTop:6}}>
-                      <span style={{
-                        fontSize:14, fontWeight:600,
-                        color: activeBoardCard.isStoryteller ? "#C9952A" : "var(--text)",
-                        fontFamily: activeBoardCard.isStoryteller ? "Georgia,serif" : "inherit",
-                      }}>
-                        {activeBoardCard.owner}
-                        {activeBoardCard.isStoryteller && <span style={{fontSize:11,marginLeft:6,color:"rgba(201,149,42,0.7)"}}>★ Storyteller</span>}
+                    <div style={{textAlign:"center",marginTop:4}}>
+                      <span style={{fontSize:13,fontWeight:600,color:activeBoardCard.isStoryteller?"#C9952A":"var(--text)"}}>
+                        {activeBoardCard.owner}{activeBoardCard.isStoryteller?" ★":""}
+                      </span>
+                    </div>
+                  )}
+                  {phase===3&&(
+                    <div style={{textAlign:"center",marginTop:4}}>
+                      <span style={{fontSize:13,fontWeight:600,color:activeBoardCard.isStoryteller?"#C9952A":"var(--text)"}}>
+                        {activeBoardCard.owner}{activeBoardCard.isStoryteller?" ★":""}
                       </span>
                     </div>
                   )}
@@ -1063,16 +1065,13 @@ function Game({ go, S, roomCode, myName }) {
                             : (c.isStoryteller&&phase===3 ? "3px solid #C9952A" : "none"),
                           borderRadius:8,
                           boxShadow: c.isStoryteller&&phase===3 ? "0 0 12px rgba(201,149,42,0.5)" : "none",
+                          borderRadius:8,
                         }}>
                           {/* Face-down in phase 2 — all cards look the same */}
-                          {phase<3 ? <FaceDown size="mini"/> : <CardFace card={c} size="mini" />}
+                          {phase===1 ? <FaceDown size="mini"/> : <CardFace card={c} size="mini" />}
                         </div>
-                        {phase===3&&(
-                          <span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"var(--gold)":"var(--textMuted)",textAlign:"center",maxWidth:56,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                            {c.owner}
-                          </span>
-                        )}
-                        {votedFor===i&&phase===3&&<span style={{fontSize:9,color:"#7AC87A"}}>✓</span>}
+                        {phase===3&&<span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"#C9952A":"var(--textMuted)",textAlign:"center",maxWidth:56,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>{c.owner}{c.isStoryteller?" ★":""}</span>}
+                        {votedFor===i&&<span style={{fontSize:9,color:"#7AC87A",display:"block",textAlign:"center"}}>✓</span>}
                       </div>
                     ))}
                   </div>
@@ -1091,7 +1090,7 @@ function Game({ go, S, roomCode, myName }) {
         <div onClick={()=>setBoardOverlay(null)} style={{position:"fixed",inset:0,background:"var(--overlay)",backdropFilter:"blur(16px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,padding:24}}>
           <div onClick={e=>e.stopPropagation()} style={{maxWidth:380,width:"100%",display:"flex",flexDirection:"column",alignItems:"center",gap:20}}>
             <div style={{cursor:"pointer"}}>
-              {phase<3 ? <FaceDown size="medium"/> : <CardFace card={boardCards[boardOverlay]} size="medium"/>}
+              {phase===1 ? <FaceDown size="medium"/> : <CardFace card={boardCards[boardOverlay]} size="medium"/>}
             </div>
             {phase===2&&(
               boardCards[boardOverlay]?.owner===myName
@@ -1126,7 +1125,7 @@ function Game({ go, S, roomCode, myName }) {
           <div style={{position:"absolute",bottom:20,fontSize:10,letterSpacing:2,textTransform:"uppercase",color:"rgba(255,255,255,0.25)"}}>Tap anywhere to close</div>
           {fullscreen.type==="board"?(
             <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
-              {phase<3 ? (
+              {phase===1 ? (
                 <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:"linear-gradient(145deg,#1A1208,#2D2010)",border:"2px solid rgba(201,149,42,0.15)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
                   <div style={{position:"absolute",inset:0,opacity:0.1,backgroundImage:"repeating-linear-gradient(45deg,#C9952A 0px,#C9952A 1px,transparent 1px,transparent 14px),repeating-linear-gradient(-45deg,#C9952A 0px,#C9952A 1px,transparent 1px,transparent 14px)"}}/>
                   <div style={{position:"relative",zIndex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:12}}>
@@ -1135,7 +1134,7 @@ function Game({ go, S, roomCode, myName }) {
                   </div>
                 </div>
               ) : (
-                <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:boardCards[fullscreen.idx]?.bg,border:boardCards[fullscreen.idx]?.isStoryteller?"5px solid #C9952A":"2px solid rgba(201,149,42,0.2)",boxShadow:boardCards[fullscreen.idx]?.isStoryteller?"0 0 140px rgba(0,0,0,0.95),0 0 40px rgba(201,149,42,0.3)":"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
+                <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:boardCards[fullscreen.idx]?.bg,border:"2px solid rgba(201,149,42,0.2)",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
                   {boardCards[fullscreen.idx]?.image_url
                     ?<img src={boardCards[fullscreen.idx].image_url} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
                     :<span style={{fontSize:"clamp(100px,22vw,220px)",lineHeight:1,position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)"}}>{boardCards[fullscreen.idx]?.emoji}</span>
@@ -1143,10 +1142,9 @@ function Game({ go, S, roomCode, myName }) {
                 </div>
               )}
               {phase===3&&boardCards[fullscreen.idx]&&(
-                <div style={{textAlign:"center"}}>
+                <div style={{textAlign:"center",marginTop:8}}>
                   <div style={{fontSize:16,fontWeight:600,color:boardCards[fullscreen.idx].isStoryteller?"#C9952A":"var(--text)"}}>
-                    {boardCards[fullscreen.idx].owner}
-                    {boardCards[fullscreen.idx].isStoryteller&&<span style={{fontSize:13,marginLeft:8,color:"rgba(201,149,42,0.7)"}}>★ Storyteller</span>}
+                    {boardCards[fullscreen.idx].owner}{boardCards[fullscreen.idx].isStoryteller?" ★":""}
                   </div>
                 </div>
               )}
