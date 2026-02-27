@@ -854,6 +854,8 @@ function Game({ go, S, roomCode, myName }) {
     if(boardOverlay===null) return;
     const card = boardCards[boardOverlay];
     if(!card) return;
+    // Storyteller cannot vote
+    if(isStoryteller) return;
     // Check own card via submitted card_id (owner field is "?" in phase 2)
     if(card.id===submittedCardId) return;
     play("vote");
@@ -1047,8 +1049,9 @@ function Game({ go, S, roomCode, myName }) {
       {gameTab==="board"&&(
         <div style={{flex:1,display:"flex",flexDirection:"column",overflowY:"auto",padding:"20px 16px",gap:20}}>
           {phase===1&&<div style={{textAlign:"center",padding:"14px",background:"var(--surface)",borderRadius:12,fontSize:13,color:"var(--textMuted)"}}>Waiting for all players to submit... ({boardCards.length}/{players.length})</div>}
-          {phase===2&&!voteConfirmed&&<div style={{textAlign:"center",padding:"14px",background:"color-mix(in srgb, var(--gold) 8%, transparent)",border:"1px solid color-mix(in srgb, var(--gold) 25%, transparent)",borderRadius:12,fontSize:13,color:"var(--text)"}}>Vote for the card you think belongs to {STORYTELLER}.</div>}
-          {phase===2&&voteConfirmed&&<div style={{textAlign:"center",padding:"14px",background:"var(--surface)",borderRadius:12,fontSize:13,color:"var(--textMuted)"}}>Vote cast ✓ — waiting for everyone...</div>}
+          {phase===2&&isStoryteller&&<div style={{textAlign:"center",padding:"14px",background:"var(--surface)",borderRadius:12,fontSize:13,color:"var(--textMuted)"}}>Players are voting — you don't vote as Storyteller.</div>}
+          {phase===2&&!isStoryteller&&!voteConfirmed&&<div style={{textAlign:"center",padding:"14px",background:"color-mix(in srgb, var(--gold) 8%, transparent)",border:"1px solid color-mix(in srgb, var(--gold) 25%, transparent)",borderRadius:12,fontSize:13,color:"var(--text)"}}>Vote for the card you think belongs to {STORYTELLER}.</div>}
+          {phase===2&&!isStoryteller&&voteConfirmed&&<div style={{textAlign:"center",padding:"14px",background:"var(--surface)",borderRadius:12,fontSize:13,color:"var(--textMuted)"}}>Vote cast ✓ — waiting for everyone...</div>}
           {phase===3&&<div style={{textAlign:"center",padding:"14px",background:"color-mix(in srgb, var(--gold) 8%, transparent)",border:"1px solid color-mix(in srgb, var(--gold) 25%, transparent)",borderRadius:12,fontSize:13,color:"var(--text)"}}><span>Cards revealed! </span><span style={{color:"#C9952A",fontWeight:600}}>{STORYTELLER}</span><span>'s card is highlighted in gold.</span></div>}
 
           {boardCards.length===0?(
@@ -1068,7 +1071,7 @@ function Game({ go, S, roomCode, myName }) {
                   </div>
 
                   {phase===3&&(
-                    <div style={{textAlign:"center",marginTop:6}}>
+                    <div style={{textAlign:"center",marginTop:6,display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
                       <span style={{
                         fontSize:14,fontWeight:700,
                         color:activeBoardCard.isStoryteller?"#C9952A":"var(--text)",
@@ -1076,12 +1079,22 @@ function Game({ go, S, roomCode, myName }) {
                       }}>
                         {activeBoardCard.owner||"?"}{activeBoardCard.isStoryteller?" ★":""}
                       </span>
+                      {activeBoardCard.votes?.length>0?(
+                        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+                          <span style={{fontSize:11,fontWeight:700,color:"#7AC87A"}}>{activeBoardCard.votes.length} vote{activeBoardCard.votes.length!==1?"s":""}</span>
+                          <span style={{fontSize:11,color:"var(--textMuted)"}}>{activeBoardCard.votes.join(", ")}</span>
+                        </div>
+                      ):(
+                        <span style={{fontSize:11,color:"var(--textMuted)"}}>No votes</span>
+                      )}
                     </div>
                   )}
                   {phase===2&&!voteConfirmed&&(
-                    activeBoardCard.id===submittedCardId
-                      ? <div style={{fontSize:13,color:"var(--textMuted)",padding:"10px",textAlign:"center"}}>This is your card — you can't vote for it</div>
-                      : <button style={{...S.btnP,padding:"13px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320}} onClick={()=>setBoardOverlay(focusedBoard)}>Vote for this card</button>
+                    isStoryteller
+                      ? <div style={{fontSize:13,color:"var(--textMuted)",padding:"10px",textAlign:"center"}}>You're the Storyteller — you don't vote this round</div>
+                      : activeBoardCard.id===submittedCardId
+                        ? <div style={{fontSize:13,color:"var(--textMuted)",padding:"10px",textAlign:"center"}}>This is your card — you can't vote for it</div>
+                        : <button style={{...S.btnP,padding:"13px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320}} onClick={()=>setBoardOverlay(focusedBoard)}>Vote for this card</button>
                   )}
                   <div style={{display:"flex",gap:8,overflowX:"auto",padding:"4px 0",maxWidth:"100%"}}>
                     {boardCards.map((c,i)=>(
@@ -1099,11 +1112,18 @@ function Game({ go, S, roomCode, myName }) {
                           {phase===1 ? <FaceDown size="mini"/> : <CardFace card={c} size="mini" />}
                         </div>
                         {phase===3&&(
-                          <span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"#C9952A":"var(--textMuted)",textAlign:"center",maxWidth:56,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>
-                            {c.owner||"?"}{c.isStoryteller?" ★":""}
-                          </span>
+                          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
+                            <span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"#C9952A":"var(--textMuted)",textAlign:"center",maxWidth:56,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>
+                              {c.owner||"?"}{c.isStoryteller?" ★":""}
+                            </span>
+                            {c.votes?.length>0&&(
+                              <span style={{fontSize:9,fontWeight:700,color:"#7AC87A",background:"rgba(30,60,30,0.9)",borderRadius:6,padding:"1px 5px",display:"block",textAlign:"center"}}>
+                                {"✓".repeat(c.votes.length)} {c.votes.length}
+                              </span>
+                            )}
+                          </div>
                         )}
-                        {votedFor===c.id&&<span style={{fontSize:9,color:"#7AC87A",display:"block",textAlign:"center"}}>✓</span>}
+                        {votedFor===c.id&&phase!==3&&<span style={{fontSize:9,color:"#7AC87A",display:"block",textAlign:"center"}}>✓</span>}
                       </div>
                     ))}
                   </div>
@@ -1128,9 +1148,11 @@ function Game({ go, S, roomCode, myName }) {
               {phase===1 ? <FaceDown size="medium"/> : <CardFace card={boardCards[boardOverlay]} size="medium"/>}
             </div>
             {phase===2&&(
-              boardCards[boardOverlay]?.id===submittedCardId
-                ? <div style={{fontSize:13,color:"#C4622D",textAlign:"center",padding:"10px"}}>This is your card — you can't vote for it</div>
-                : <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%"}} onClick={confirmVote}>Confirm Vote</button>
+              isStoryteller
+                ? <div style={{fontSize:13,color:"var(--textMuted)",textAlign:"center",padding:"10px"}}>You're the Storyteller — you don't vote this round</div>
+                : boardCards[boardOverlay]?.id===submittedCardId
+                  ? <div style={{fontSize:13,color:"#C4622D",textAlign:"center",padding:"10px"}}>This is your card — you can't vote for it</div>
+                  : <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%"}} onClick={confirmVote}>Confirm Vote</button>
             )}
             <div style={{fontSize:11,color:"var(--textMuted)"}}>Tap outside to close</div>
           </div>
@@ -1176,11 +1198,23 @@ function Game({ go, S, roomCode, myName }) {
                   }
                 </div>
               )}
-              {phase===3&&boardCards[fullscreen.idx]&&boardCards[fullscreen.idx].owner&&boardCards[fullscreen.idx].owner!=="?"&&(
-                <div style={{textAlign:"center",marginTop:12}}>
+              {phase===3&&boardCards[fullscreen.idx]&&(
+                <div style={{textAlign:"center",marginTop:12,display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
                   <div style={{fontSize:18,fontWeight:700,color:boardCards[fullscreen.idx].isStoryteller?"#C9952A":"var(--text)",letterSpacing:boardCards[fullscreen.idx].isStoryteller?1:0}}>
-                    {boardCards[fullscreen.idx].owner}{boardCards[fullscreen.idx].isStoryteller?" ★":""}
+                    {boardCards[fullscreen.idx].owner||"?"}{boardCards[fullscreen.idx].isStoryteller?" ★":""}
                   </div>
+                  {boardCards[fullscreen.idx].votes?.length>0?(
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                      <div style={{fontSize:13,fontWeight:700,color:"#7AC87A"}}>{boardCards[fullscreen.idx].votes.length} vote{boardCards[fullscreen.idx].votes.length!==1?"s":""}</div>
+                      <div style={{display:"flex",flexWrap:"wrap",justifyContent:"center",gap:6,maxWidth:280}}>
+                        {boardCards[fullscreen.idx].votes.map((voter,vi)=>(
+                          <span key={vi} style={{fontSize:12,color:"var(--textMuted)",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:20,padding:"3px 10px"}}>{voter}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ):(
+                    <div style={{fontSize:13,color:"var(--textMuted)"}}>No votes</div>
+                  )}
                 </div>
               )}
             </div>
