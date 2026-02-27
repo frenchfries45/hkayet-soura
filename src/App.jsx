@@ -640,6 +640,7 @@ function Game({ go, S, roomCode, myName }) {
 
   const deckRef = useRef([]);
   const roundRef = useRef(1); // tracks current round without closure staleness
+  const boardOrderRef = useRef({}); // { [round]: [card_id, ...] } — stable shuffle per round
 
   // ── Hand dealing (server-authoritative) ───────────────────────
   // hands stored in rooms.dealt_hands as JSON: { playerName: [cardId,...] }
@@ -660,9 +661,9 @@ function Game({ go, S, roomCode, myName }) {
       if (hand.length > 0) { setHandCards(hand); return; }
     }
 
-    // Only the first player alphabetically does the deal to avoid race conditions
-    const sortedNames = [...playerList.map(p=>p.name)].sort();
-    const isDealer = sortedNames[0] === myName;
+    // Only the first-joined player (by created_at) does the deal to avoid race conditions
+    const sortedByJoin = [...playerList].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0));
+    const isDealer = sortedByJoin[0]?.name === myName;
     if (!isDealer) {
       // Retry up to 4 times (waiting for dealer to write hands)
       for (let attempt = 0; attempt < 4; attempt++) {
@@ -748,7 +749,23 @@ function Game({ go, S, roomCode, myName }) {
         votes: vs ? vs.filter(v=>v.voted_card_id===play.card_id).map(v=>v.voter_name) : [],
       };
     });
-    setBoardCards(shuffle(cards));
+    // Use a stable shuffle order per round — don't re-shuffle on every update
+    const roundKey = r;
+    if(!boardOrderRef.current[roundKey]) {
+      // First time we see cards for this round — shuffle and lock in the order
+      boardOrderRef.current[roundKey] = shuffle(cards).map(c=>c.id);
+    }
+    const order = boardOrderRef.current[roundKey];
+    // Sort cards according to the locked order; new cards (not yet in order) go at end
+    const cardById = {};
+    cards.forEach(c=>{ cardById[c.id]=c; });
+    const ordered = [
+      ...order.map(id=>cardById[id]).filter(Boolean),
+      ...cards.filter(c=>!order.includes(c.id)),
+    ];
+    // Update order ref to include any new cards
+    boardOrderRef.current[roundKey] = ordered.map(c=>c.id);
+    setBoardCards(ordered);
   };
 
   useEffect(()=>{
@@ -808,7 +825,7 @@ function Game({ go, S, roomCode, myName }) {
         const isNewRound = r.round !== roundRef.current;
         if(isNewRound) { roundRef.current = r.round; }
         setPhase(r.phase);setStorytellerIdx(r.storyteller_idx);
-        if(isNewRound){setRound(r.round);setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);setRoundDeltas(null);setBoardCards([]);setFocusedBoard(0);}
+        if(isNewRound){setRound(r.round);setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);setRoundDeltas(null);setBoardCards([]);setFocusedBoard(0);boardOrderRef.current={};}
         if(r.clue) setConfirmedClue(r.clue); else setConfirmedClue("");
         // Show round summary overlay on all clients when round_deltas is set
         if(r.round_deltas && r.round_deltas!=="null" && !isNewRound){
@@ -830,11 +847,11 @@ function Game({ go, S, roomCode, myName }) {
           setSelHand(0);setClueText("");setConfirmedClue("");setGameTab("hand");
         }
       })
-      .on("postgres_changes",{event:"*",schema:"public",table:"card_plays",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||round); })
-      .on("postgres_changes",{event:"*",schema:"public",table:"votes",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||round); })
+      .on("postgres_changes",{event:"*",schema:"public",table:"card_plays",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||roundRef.current); })
+      .on("postgres_changes",{event:"*",schema:"public",table:"votes",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||roundRef.current); })
       .on("postgres_changes",{event:"*",schema:"public",table:"room_players",filter:`room_code=eq.${roomCode}`},async()=>{
         const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-        if(ps){ const sorted=[...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score})));if(ps.length<3)setGameDisbanded(true);}
+        if(ps){ const sorted=[...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score})));if(ps.length<3)setGameDisbanded(true);else setGameDisbanded(false);}
       })
       .subscribe();
     return ()=>{ supabase.removeChannel(ch); supabase.removeChannel(presenceCh); };
@@ -848,8 +865,8 @@ function Game({ go, S, roomCode, myName }) {
     play("clueGiven");
     setConfirmedClue(clueText.trim()); // set immediately before async to avoid flash
     await supabase.from("rooms").update({clue:clueText.trim(),phase:1}).eq("code",roomCode);
-    const {data:existing} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round).eq("player_name",myName).single();
-    if(!existing) await supabase.from("card_plays").insert({room_code:roomCode,round,player_name:myName,card_id:card.id});
+    const {data:existing} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",roundRef.current).eq("player_name",myName).single();
+    if(!existing) await supabase.from("card_plays").insert({room_code:roomCode,round:roundRef.current,player_name:myName,card_id:card.id});
     setSubmittedCardId(card.id);
   };
 
@@ -857,15 +874,15 @@ function Game({ go, S, roomCode, myName }) {
     const card = handCards[selHand];
     if(!card||submittedCardId) return;
     play("cardSubmit");
-    const {data:existing} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round).eq("player_name",myName).single();
+    const {data:existing} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",roundRef.current).eq("player_name",myName).single();
     if(existing){setSubmittedCardId(existing.card_id);return;}
-    await supabase.from("card_plays").insert({room_code:roomCode,round,player_name:myName,card_id:card.id});
+    await supabase.from("card_plays").insert({room_code:roomCode,round:roundRef.current,player_name:myName,card_id:card.id});
     setSubmittedCardId(card.id);
-    const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round);
-    // Use fresh player count from DB to avoid stale React state
+    const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
+    // Always use fresh player count from DB
     const {data:freshPsCount} = await supabase.from("room_players").select("id").eq("room_code",roomCode).eq("is_active",true);
-    const activeCount = freshPsCount?.length || players.length;
-    if(plays&&plays.length>=activeCount) await supabase.from("rooms").update({phase:2}).eq("code",roomCode);
+    const activeCount = freshPsCount?.length || 0;
+    if(activeCount>0 && plays&&plays.length>=activeCount) await supabase.from("rooms").update({phase:2}).eq("code",roomCode);
   };
 
   const confirmVote = async ()=>{
@@ -882,9 +899,18 @@ function Game({ go, S, roomCode, myName }) {
     await supabase.from("votes").insert({room_code:roomCode,round,voter_name:myName,voted_card_id:card.id});
     setVotedFor(card.id); // store card_id, not index — index changes if board reshuffles
     setVoteConfirmed(true);setBoardOverlay(null);
-    const {data:vs} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",round);
-    const nonST = players.filter(p=>p.name!==STORYTELLER);
-    if(vs&&vs.length>=nonST.length) await supabase.from("rooms").update({phase:3}).eq("code",roomCode);
+    const {data:vs} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
+    // Fetch fresh player list and storyteller from DB — don't use stale React state
+    const {data:freshRoomVote} = await supabase.from("rooms").select("storyteller_idx").eq("code",roomCode).single();
+    const {data:freshPsVote}   = await supabase.from("room_players").select("name,created_at").eq("room_code",roomCode).eq("is_active",true);
+    const sortedVotePs = freshPsVote ? [...freshPsVote].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)) : [];
+    const stIdxVote = freshRoomVote?.storyteller_idx||0;
+    const stNameVote = sortedVotePs[stIdxVote%Math.max(sortedVotePs.length,1)]?.name||"";
+    const nonSTVote = sortedVotePs.filter(p=>p.name!==stNameVote);
+    if(vs&&vs.length>=nonSTVote.length){
+      // Only advance if still in phase 2 — prevents race between simultaneous voters
+      await supabase.from("rooms").update({phase:3}).eq("code",roomCode).eq("phase",2);
+    }
   };
 
   const endRound = async ()=>{
@@ -960,10 +986,13 @@ function Game({ go, S, roomCode, myName }) {
     const newIdx = storytellerIdx+1;
     const newRound = round+1;
     roundRef.current = newRound;
+    boardOrderRef.current = {};
     setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setConfirmedClue("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);setGameTab("hand");
 
     // Fetch played cards this round and current room state
-    const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round);
+    // Use roundRef.current (not stale React state) for the correct round number
+    const currentRoundNum = roundRef.current - 1; // roundRef was already incremented above
+    const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",currentRoundNum);
     const {data:currentRoom} = await supabase.from("rooms").select("used_cards,dealt_hands").eq("code",roomCode).single();
     let usedCards = [];
     let dealtHands = {};
@@ -990,7 +1019,9 @@ function Game({ go, S, roomCode, myName }) {
     // For each player, replace only the card they played with a new one
     const newDealtHands = {...dealtHands};
     const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-    (ps||[]).forEach(p => {
+    // Sort consistently by created_at so player order is stable across all clients
+    const sortedPsNext = ps ? [...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)) : [];
+    sortedPsNext.forEach(p => {
       const playedCard = plays?.find(pl=>pl.player_name===p.name);
       if (!playedCard) return; // player didn't submit — keep hand as-is
       const currentHand = newDealtHands[p.name] || [];
@@ -1380,6 +1411,8 @@ function Game({ go, S, roomCode, myName }) {
               <button style={{...S.btnP,flex:1,padding:"12px"}} onClick={async()=>{
                 // Reset all local state first
                 setWinner(null);
+                roundRef.current = 1;
+                boardOrderRef.current = {};
                 setPhase(0);setRound(1);setStorytellerIdx(0);
                 setConfirmedClue("");setClueText("");
                 setHandCards([]);setBoardCards([]);
