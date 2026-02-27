@@ -265,6 +265,31 @@ function CardFace({ card, size = "large", label = null, highlight = false, voteC
   );
 }
 
+
+// ── FaceDown: back of a card shown before reveal ──────────────
+function FaceDown({ size="large" }) {
+  const isMini = size==="mini";
+  const w = isMini ? 52 : size==="medium" ? 220 : "min(230px,54vw)";
+  const h = isMini ? 72 : size==="medium" ? "min(308px,77vw)" : "min(324px,76vw)";
+  return (
+    <div style={{
+      width:w, height:h, borderRadius:isMini?8:20, flexShrink:0, position:"relative",
+      background:"linear-gradient(145deg,#1A1208,#2D2010)",
+      border:`${isMini?1:2}px solid rgba(201,149,42,0.2)`,
+      display:"flex", alignItems:"center", justifyContent:"center",
+      overflow:"hidden",
+      boxShadow: isMini ? "none" : "0 40px 100px rgba(0,0,0,0.7)",
+    }}>
+      {/* Card back pattern */}
+      <div style={{position:"absolute",inset:0,opacity:0.12,backgroundImage:"repeating-linear-gradient(45deg,#C9952A 0px,#C9952A 1px,transparent 1px,transparent 12px),repeating-linear-gradient(-45deg,#C9952A 0px,#C9952A 1px,transparent 1px,transparent 12px)"}}/>
+      <div style={{position:"relative",zIndex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:isMini?2:8}}>
+        <div style={{fontSize:isMini?16:36,opacity:0.4}}>🎴</div>
+        {!isMini&&<div style={{fontSize:9,letterSpacing:3,textTransform:"uppercase",color:"rgba(201,149,42,0.4)"}}>Hidden</div>}
+      </div>
+    </div>
+  );
+}
+
 // ── Sound Toggle ──────────────────────────────────────────────
 function SoundToggle() {
   const [on, setOn] = useState(true);
@@ -1000,24 +1025,55 @@ function Game({ go, S, roomCode, myName }) {
             <>
               {activeBoardCard&&(
                 <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
-                  <div onClick={()=>setFullscreen({type:"board",idx:focusedBoard})} style={{cursor:"pointer",position:"relative"}}>
+                  <div style={{cursor:"pointer",position:"relative"}}>
+                    {/* In phase 2, the storyteller's card is always face down — identity revealed in phase 3 only */}
+                    {/* We can't know which is the storyteller's in phase 2 (isStoryteller=false for all), so show all face-up */}
+                    {/* But own card is hidden from vote button already */}
                     <CardFace card={activeBoardCard} size="large"
                       highlight={activeBoardCard.isStoryteller&&phase===3}
-                      label={phase===3?activeBoardCard.owner:"Tap to expand"}
+                      label={null}
                       voteCount={phase===3?activeBoardCard.votes?.length:0}
                     />
                   </div>
-                  {phase===2&&!voteConfirmed&&activeBoardCard.owner!==myName&&(
-                    <button style={{...S.btnP,padding:"13px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320}} onClick={()=>setBoardOverlay(focusedBoard)}>Vote for this card</button>
+                  {/* Owner label OUTSIDE card, only in reveal phase */}
+                  {phase===3&&(
+                    <div style={{textAlign:"center",marginTop:6}}>
+                      <span style={{
+                        fontSize:14, fontWeight:600,
+                        color: activeBoardCard.isStoryteller ? "#C9952A" : "var(--text)",
+                        fontFamily: activeBoardCard.isStoryteller ? "Georgia,serif" : "inherit",
+                      }}>
+                        {activeBoardCard.owner}
+                        {activeBoardCard.isStoryteller && <span style={{fontSize:11,marginLeft:6,color:"rgba(201,149,42,0.7)"}}>★ Storyteller</span>}
+                      </span>
+                    </div>
+                  )}
+                  {phase===2&&!voteConfirmed&&(
+                    activeBoardCard.owner===myName
+                      ? <div style={{fontSize:13,color:"var(--textMuted)",padding:"10px",textAlign:"center"}}>This is your card — you can't vote for it</div>
+                      : <button style={{...S.btnP,padding:"13px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320}} onClick={()=>setBoardOverlay(focusedBoard)}>Vote for this card</button>
                   )}
                   <div style={{display:"flex",gap:8,overflowX:"auto",padding:"4px 0",maxWidth:"100%"}}>
                     {boardCards.map((c,i)=>(
-                      <div key={i} onClick={()=>{setFocusedBoard(i);setFullscreen({type:"board",idx:i});}} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0}}>
-                        <div style={{transform:focusedBoard===i?"translateY(-4px)":"none",transition:"transform 0.2s",outline:focusedBoard===i?(c.isStoryteller&&phase===3?"2px solid #C9952A":"2px solid var(--gold)"):"none",borderRadius:8}}>
-                          <CardFace card={c} size="mini" />
+                      <div key={i} onClick={()=>setFocusedBoard(i)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0}}>
+                        <div style={{
+                          transform:focusedBoard===i?"translateY(-4px)":"none",
+                          transition:"transform 0.2s",
+                          outline: focusedBoard===i
+                            ? (c.isStoryteller&&phase===3 ? "3px solid #C9952A" : "2px solid var(--gold)")
+                            : (c.isStoryteller&&phase===3 ? "3px solid #C9952A" : "none"),
+                          borderRadius:8,
+                          boxShadow: c.isStoryteller&&phase===3 ? "0 0 12px rgba(201,149,42,0.5)" : "none",
+                        }}>
+                          {/* Face-down in phase 2 — all cards look the same */}
+                          {phase===2 ? <FaceDown size="mini"/> : <CardFace card={c} size="mini" />}
                         </div>
-                        {phase===3&&<span style={{fontSize:8,color:c.isStoryteller?"var(--gold)":"var(--textMuted)",textAlign:"center",maxWidth:52,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.owner}</span>}
-                        {votedFor===i&&<span style={{fontSize:9,color:"#7AC87A"}}>✓</span>}
+                        {phase===3&&(
+                          <span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"var(--gold)":"var(--textMuted)",textAlign:"center",maxWidth:56,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                            {c.owner}
+                          </span>
+                        )}
+                        {votedFor===i&&phase===3&&<span style={{fontSize:9,color:"#7AC87A"}}>✓</span>}
                       </div>
                     ))}
                   </div>
@@ -1035,11 +1091,13 @@ function Game({ go, S, roomCode, myName }) {
       {boardOverlay!==null&&!fullscreen&&(
         <div onClick={()=>setBoardOverlay(null)} style={{position:"fixed",inset:0,background:"var(--overlay)",backdropFilter:"blur(16px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,padding:24}}>
           <div onClick={e=>e.stopPropagation()} style={{maxWidth:380,width:"100%",display:"flex",flexDirection:"column",alignItems:"center",gap:20}}>
-            <div onClick={()=>setFullscreen({type:"board",idx:boardOverlay})} style={{cursor:"pointer"}}>
-              <CardFace card={boardCards[boardOverlay]} size="medium" label="Tap to expand" />
+            <div style={{cursor:"pointer"}}>
+              {phase===2 ? <FaceDown size="medium"/> : <CardFace card={boardCards[boardOverlay]} size="medium"/>}
             </div>
-            {phase===2&&boardCards[boardOverlay]?.owner!==myName&&(
-              <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%"}} onClick={confirmVote}>Confirm Vote</button>
+            {phase===2&&(
+              boardCards[boardOverlay]?.owner===myName
+                ? <div style={{fontSize:13,color:"#C4622D",textAlign:"center",padding:"10px"}}>This is your card — you can't vote for it</div>
+                : <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%"}} onClick={confirmVote}>Confirm Vote</button>
             )}
             <div style={{fontSize:11,color:"var(--textMuted)"}}>Tap outside to close</div>
           </div>
@@ -1068,11 +1126,31 @@ function Game({ go, S, roomCode, myName }) {
         <div onClick={()=>setFullscreen(null)} style={{position:"fixed",inset:0,background:"var(--fullBg)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500,cursor:"pointer"}}>
           <div style={{position:"absolute",bottom:20,fontSize:10,letterSpacing:2,textTransform:"uppercase",color:"rgba(255,255,255,0.25)"}}>Tap anywhere to close</div>
           {fullscreen.type==="board"?(
-            <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:boardCards[fullscreen.idx]?.bg,border:boardCards[fullscreen.idx]?.isStoryteller?"3px solid #C9952A":"2px solid rgba(201,149,42,0.2)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
-              {boardCards[fullscreen.idx]?.image_url
-                ?<img src={boardCards[fullscreen.idx].image_url} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
-                :<span style={{fontSize:"clamp(100px,22vw,220px)",lineHeight:1}}>{boardCards[fullscreen.idx]?.emoji}</span>
-              }
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
+              {phase===2 ? (
+                <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:"linear-gradient(145deg,#1A1208,#2D2010)",border:"2px solid rgba(201,149,42,0.15)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
+                  <div style={{position:"absolute",inset:0,opacity:0.1,backgroundImage:"repeating-linear-gradient(45deg,#C9952A 0px,#C9952A 1px,transparent 1px,transparent 14px),repeating-linear-gradient(-45deg,#C9952A 0px,#C9952A 1px,transparent 1px,transparent 14px)"}}/>
+                  <div style={{position:"relative",zIndex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:12}}>
+                    <div style={{fontSize:64,opacity:0.3}}>🎴</div>
+                    <div style={{fontSize:11,letterSpacing:3,textTransform:"uppercase",color:"rgba(201,149,42,0.35)"}}>Hidden until reveal</div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:boardCards[fullscreen.idx]?.bg,border:boardCards[fullscreen.idx]?.isStoryteller?"5px solid #C9952A":"2px solid rgba(201,149,42,0.2)",boxShadow:boardCards[fullscreen.idx]?.isStoryteller?"0 0 140px rgba(0,0,0,0.95),0 0 40px rgba(201,149,42,0.3)":"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
+                  {boardCards[fullscreen.idx]?.image_url
+                    ?<img src={boardCards[fullscreen.idx].image_url} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
+                    :<span style={{fontSize:"clamp(100px,22vw,220px)",lineHeight:1,position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)"}}>{boardCards[fullscreen.idx]?.emoji}</span>
+                  }
+                </div>
+              )}
+              {phase===3&&boardCards[fullscreen.idx]&&(
+                <div style={{textAlign:"center"}}>
+                  <div style={{fontSize:16,fontWeight:600,color:boardCards[fullscreen.idx].isStoryteller?"#C9952A":"var(--text)"}}>
+                    {boardCards[fullscreen.idx].owner}
+                    {boardCards[fullscreen.idx].isStoryteller&&<span style={{fontSize:13,marginLeft:8,color:"rgba(201,149,42,0.7)"}}>★ Storyteller</span>}
+                  </div>
+                </div>
+              )}
             </div>
           ):(
             <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:handCards[fullscreen.idx]?.bg,border:"2px solid rgba(201,149,42,0.2)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
