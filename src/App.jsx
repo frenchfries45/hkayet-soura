@@ -638,6 +638,7 @@ function Game({ go, S, roomCode, myName }) {
   const phaseLabels  = ["Clue","Submit","Vote","Reveal"];
 
   const deckRef = useRef([]);
+  const roundRef = useRef(1); // tracks current round without closure staleness
 
   // ── Hand dealing (server-authoritative) ───────────────────────
   // hands stored in rooms.dealt_hands as JSON: { playerName: [cardId,...] }
@@ -756,7 +757,7 @@ function Game({ go, S, roomCode, myName }) {
       if(ps){ const sorted=[...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score}))); }
       const {data:room} = await supabase.from("rooms").select("*").eq("code",roomCode).single();
       if(room){
-        setPhase(room.phase);setRound(room.round);setStorytellerIdx(room.storyteller_idx);
+        setPhase(room.phase);setRound(room.round);roundRef.current=room.round;setStorytellerIdx(room.storyteller_idx);
         if(room.clue) setConfirmedClue(room.clue);
         setGameTab(room.phase>=2?"board":"hand");
       }
@@ -800,14 +801,16 @@ function Game({ go, S, roomCode, myName }) {
     const ch = supabase.channel(`game:${roomCode}`)
       .on("postgres_changes",{event:"UPDATE",schema:"public",table:"rooms",filter:`code=eq.${roomCode}`},async(payload)=>{
         const r=payload.new;
+        const isNewRound = r.round !== roundRef.current;
+        if(isNewRound) { roundRef.current = r.round; }
         setPhase(r.phase);setStorytellerIdx(r.storyteller_idx);
-        if(r.round!==round){setRound(r.round);setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);setRoundDeltas(null);setBoardCards([]);setFocusedBoard(0);}
+        if(isNewRound){setRound(r.round);setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);setRoundDeltas(null);setBoardCards([]);setFocusedBoard(0);}
         if(r.clue) setConfirmedClue(r.clue); else setConfirmedClue("");
         // Deterministic tab: board for voting/reveal, hand otherwise
         setGameTab(r.phase>=2?"board":"hand");
         await loadBoard(r.round);
         // New round: restore updated hand from dealt_hands (storyteller already replaced played cards)
-        if(r.round!==round && r.dealt_hands && r.dealt_hands!=="{}") {
+        if(isNewRound && r.dealt_hands && r.dealt_hands!=="{}") {
           let newHands={};
           try { newHands=JSON.parse(r.dealt_hands); } catch(e){}
           if(newHands[myName]?.length>0){
@@ -878,44 +881,68 @@ function Game({ go, S, roomCode, myName }) {
 
   const endRound = async ()=>{
     play("reveal");
-    // Fetch fresh data from DB to avoid stale boardCards state
-    const {data:freshPlays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round);
-    const {data:freshVotes} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",round);
+    // Fetch ALL fresh data from DB — never use stale React state for scoring
+    const {data:freshPlays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
+    const {data:freshVotes} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
     const {data:freshRoom}  = await supabase.from("rooms").select("storyteller_idx").eq("code",roomCode).single();
-    const {data:freshPs}    = await supabase.from("room_players").select("name,created_at").eq("room_code",roomCode).eq("is_active",true);
-    const stIdx2 = freshRoom?.storyteller_idx||0;
-    const sortedFreshPs = freshPs ? [...freshPs].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)) : [];
+    const {data:freshPs}    = await supabase.from("room_players").select("name,score,created_at").eq("room_code",roomCode).eq("is_active",true);
+    if(!freshPlays||!freshVotes||!freshRoom||!freshPs) return;
+
+    // Resolve storyteller from fresh sorted player list
+    const sortedFreshPs = [...freshPs].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0));
+    const stIdx2 = freshRoom.storyteller_idx||0;
     const stName2 = sortedFreshPs[stIdx2%Math.max(sortedFreshPs.length,1)]?.name||"";
-    const stPlay = freshPlays?.find(p=>p.player_name===stName2);
-    const correctVoters = stPlay ? (freshVotes||[]).filter(v=>v.voted_card_id===stPlay.card_id).map(v=>v.voter_name) : [];
-    const nonST = PLAYER_LIST.filter(p=>p!==STORYTELLER);
-    const allOrNone = correctVoters.length===0||correctVoters.length===nonST.length;
+    const freshPlayerNames = sortedFreshPs.map(p=>p.name);
+    const freshNonST = freshPlayerNames.filter(n=>n!==stName2);
+
+    // Find storyteller card and who voted for it
+    const stPlay = freshPlays.find(p=>p.player_name===stName2);
+    const correctVoters = stPlay
+      ? freshVotes.filter(v=>v.voted_card_id===stPlay.card_id).map(v=>v.voter_name)
+      : [];
+
+    // Score calculation (Dixit rules)
+    const allOrNone = correctVoters.length===0 || correctVoters.length===freshNonST.length;
     const deltas={};
-    PLAYER_LIST.forEach(p=>{deltas[p]=0;});
+    freshPlayerNames.forEach(p=>{ deltas[p]=0; });
+
     if(!allOrNone){
-      deltas[STORYTELLER]=3;
-      correctVoters.forEach(v=>{deltas[v]=(deltas[v]||0)+3;});
+      // Some but not all guessed: storyteller +3, correct guessers +3
+      deltas[stName2]=(deltas[stName2]||0)+3;
+      correctVoters.forEach(v=>{ deltas[v]=(deltas[v]||0)+3; });
     } else {
-      nonST.forEach(p=>{deltas[p]=(deltas[p]||0)+2;});
+      // All or none guessed: non-storytellers each +2 (storyteller gets nothing)
+      freshNonST.forEach(p=>{ deltas[p]=(deltas[p]||0)+2; });
     }
-    // Bonus points: 1 per vote received on non-storyteller cards (from fresh DB)
-    (freshPlays||[]).filter(p=>p.player_name!==stName2).forEach(p=>{
-      const voteCount = (freshVotes||[]).filter(v=>v.voted_card_id===p.card_id).length;
+    // Bonus: +1 per vote on any non-storyteller card
+    freshPlays.filter(p=>p.player_name!==stName2).forEach(p=>{
+      const voteCount = freshVotes.filter(v=>v.voted_card_id===p.card_id).length;
       if(voteCount>0) deltas[p.player_name]=(deltas[p.player_name]||0)+voteCount;
     });
+
+    // Apply deltas to FRESH scores from DB (not stale React state)
+    const newScores = freshPs.map(p=>({name:p.name, score:(p.score||0)+(deltas[p.name]||0)}));
     setRoundDeltas(deltas);
-    const newScores = scores.map(s=>({...s,score:s.score+(deltas[s.name]||0)}));
     setScores(newScores);
-    for(const s of newScores) await supabase.from("room_players").update({score:s.score}).eq("room_code",roomCode).eq("name",s.name);
+
+    // Write new scores to DB
+    for(const s of newScores){
+      await supabase.from("room_players").update({score:s.score}).eq("room_code",roomCode).eq("name",s.name);
+    }
+
     const top = Math.max(...newScores.map(s=>s.score));
     play("score");
-    if(top>=WIN_TARGET) { play("score"); setTimeout(()=>play("score"),400); setWinner({names:newScores.filter(s=>s.score===top).map(w=>w.name),scores:newScores,topScore:top}); }
+    if(top>=WIN_TARGET){
+      play("score"); setTimeout(()=>play("score"),400);
+      setWinner({names:newScores.filter(s=>s.score===top).map(w=>w.name),scores:newScores,topScore:top});
+    }
   };
 
   const nextRound = async ()=>{
     play("newRound");
     const newIdx = storytellerIdx+1;
     const newRound = round+1;
+    roundRef.current = newRound;
     setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setConfirmedClue("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);setGameTab("hand");
 
     // Fetch played cards this round and current room state
@@ -1158,14 +1185,21 @@ function Game({ go, S, roomCode, myName }) {
                           {phase===1 ? <FaceDown size="mini"/> : <CardFace card={c} size="mini" />}
                         </div>
                         {phase===3&&(
-                          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
-                            <span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"#C9952A":"var(--textMuted)",textAlign:"center",maxWidth:56,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>
+                          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,maxWidth:64}}>
+                            <span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"#C9952A":"var(--textMuted)",textAlign:"center",maxWidth:64,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>
                               {c.owner||"?"}{c.isStoryteller?" ★":""}
                             </span>
-                            {c.votes?.length>0&&(
-                              <span style={{fontSize:9,fontWeight:700,color:"#7AC87A",background:"rgba(30,60,30,0.9)",borderRadius:6,padding:"1px 5px",display:"block",textAlign:"center"}}>
-                                {"✓".repeat(c.votes.length)} {c.votes.length}
-                              </span>
+                            {c.votes?.length>0?(
+                              <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
+                                <span style={{fontSize:9,fontWeight:700,color:"#7AC87A",background:"rgba(30,60,30,0.9)",borderRadius:6,padding:"1px 5px",display:"block",textAlign:"center"}}>
+                                  {c.votes.length} vote{c.votes.length!==1?"s":""}
+                                </span>
+                                <span style={{fontSize:8,color:"var(--textMuted)",textAlign:"center",maxWidth:64,wordBreak:"break-all",lineHeight:1.3}}>
+                                  {c.votes.join(", ")}
+                                </span>
+                              </div>
+                            ):(
+                              <span style={{fontSize:8,color:"var(--textMuted)",textAlign:"center"}}>no votes</span>
                             )}
                           </div>
                         )}
