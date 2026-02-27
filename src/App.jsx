@@ -785,14 +785,14 @@ function Game({ go, S, roomCode, myName }) {
       .on("postgres_changes",{event:"UPDATE",schema:"public",table:"rooms",filter:`code=eq.${roomCode}`},async(payload)=>{
         const r=payload.new;
         setPhase(r.phase);setStorytellerIdx(r.storyteller_idx);
-        if(r.round!==round){setRound(r.round);setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);setRoundDeltas(null);setBoardCards([]);}
+        if(r.round!==round){setRound(r.round);setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);setRoundDeltas(null);setBoardCards([]);setFocusedBoard(0);}
         if(r.clue) setConfirmedClue(r.clue); else setConfirmedClue("");
         setGameTab(r.phase>=2?"board":r.phase===0?"hand":gameTab);
         await loadBoard(r.round);
         // If dealt_hands reset (new round), re-deal for this player
         if(r.dealt_hands==="{}" || r.dealt_hands==null) {
           const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-          setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setBoardCards([]);setSelHand(0);
+          setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);
           await loadOrDealHand(deckRef.current, ps||[], r.round, r);
         }
       })
@@ -873,7 +873,7 @@ function Game({ go, S, roomCode, myName }) {
     play("newRound");
     const newIdx = storytellerIdx+1;
     const newRound = round+1;
-    setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setBoardCards([]);setSelHand(0);
+    setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);
 
     // Mark all played cards this round as used so they won't be redealt
     const {data:plays} = await supabase.from("card_plays").select("card_id").eq("room_code",roomCode).eq("round",round);
@@ -1025,15 +1025,14 @@ function Game({ go, S, roomCode, myName }) {
             <>
               {activeBoardCard&&(
                 <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
-                  <div style={{cursor:"pointer",position:"relative"}}>
-                    {/* In phase 2, the storyteller's card is always face down — identity revealed in phase 3 only */}
-                    {/* We can't know which is the storyteller's in phase 2 (isStoryteller=false for all), so show all face-up */}
-                    {/* But own card is hidden from vote button already */}
-                    <CardFace card={activeBoardCard} size="large"
-                      highlight={activeBoardCard.isStoryteller&&phase===3}
-                      label={null}
-                      voteCount={phase===3?activeBoardCard.votes?.length:0}
-                    />
+                  <div onClick={()=>setFullscreen({type:"board",idx:focusedBoard})} style={{cursor:"pointer",position:"relative"}}>
+                    {phase<3
+                      ? <FaceDown size="large"/>
+                      : <CardFace card={activeBoardCard} size="large"
+                          highlight={activeBoardCard.isStoryteller&&phase===3}
+                          voteCount={phase===3?activeBoardCard.votes?.length:0}
+                        />
+                    }
                   </div>
                   {/* Owner label OUTSIDE card, only in reveal phase */}
                   {phase===3&&(
@@ -1055,7 +1054,7 @@ function Game({ go, S, roomCode, myName }) {
                   )}
                   <div style={{display:"flex",gap:8,overflowX:"auto",padding:"4px 0",maxWidth:"100%"}}>
                     {boardCards.map((c,i)=>(
-                      <div key={i} onClick={()=>setFocusedBoard(i)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0}}>
+                      <div key={i} onClick={()=>{setFocusedBoard(i);setFullscreen({type:"board",idx:i});}} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0}}>
                         <div style={{
                           transform:focusedBoard===i?"translateY(-4px)":"none",
                           transition:"transform 0.2s",
@@ -1066,7 +1065,7 @@ function Game({ go, S, roomCode, myName }) {
                           boxShadow: c.isStoryteller&&phase===3 ? "0 0 12px rgba(201,149,42,0.5)" : "none",
                         }}>
                           {/* Face-down in phase 2 — all cards look the same */}
-                          {phase===2 ? <FaceDown size="mini"/> : <CardFace card={c} size="mini" />}
+                          {phase<3 ? <FaceDown size="mini"/> : <CardFace card={c} size="mini" />}
                         </div>
                         {phase===3&&(
                           <span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"var(--gold)":"var(--textMuted)",textAlign:"center",maxWidth:56,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
@@ -1092,7 +1091,7 @@ function Game({ go, S, roomCode, myName }) {
         <div onClick={()=>setBoardOverlay(null)} style={{position:"fixed",inset:0,background:"var(--overlay)",backdropFilter:"blur(16px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,padding:24}}>
           <div onClick={e=>e.stopPropagation()} style={{maxWidth:380,width:"100%",display:"flex",flexDirection:"column",alignItems:"center",gap:20}}>
             <div style={{cursor:"pointer"}}>
-              {phase===2 ? <FaceDown size="medium"/> : <CardFace card={boardCards[boardOverlay]} size="medium"/>}
+              {phase<3 ? <FaceDown size="medium"/> : <CardFace card={boardCards[boardOverlay]} size="medium"/>}
             </div>
             {phase===2&&(
               boardCards[boardOverlay]?.owner===myName
@@ -1127,7 +1126,7 @@ function Game({ go, S, roomCode, myName }) {
           <div style={{position:"absolute",bottom:20,fontSize:10,letterSpacing:2,textTransform:"uppercase",color:"rgba(255,255,255,0.25)"}}>Tap anywhere to close</div>
           {fullscreen.type==="board"?(
             <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
-              {phase===2 ? (
+              {phase<3 ? (
                 <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:"linear-gradient(145deg,#1A1208,#2D2010)",border:"2px solid rgba(201,149,42,0.15)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
                   <div style={{position:"absolute",inset:0,opacity:0.1,backgroundImage:"repeating-linear-gradient(45deg,#C9952A 0px,#C9952A 1px,transparent 1px,transparent 14px),repeating-linear-gradient(-45deg,#C9952A 0px,#C9952A 1px,transparent 1px,transparent 14px)"}}/>
                   <div style={{position:"relative",zIndex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:12}}>
