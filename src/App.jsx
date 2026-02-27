@@ -643,16 +643,12 @@ function Game({ go, S, roomCode, myName }) {
   const boardOrderRef = useRef({}); // { [round]: [card_id, ...] } — stable shuffle per round
 
   // ── Hand dealing (server-authoritative) ───────────────────────
-  // hands stored in rooms.dealt_hands as JSON: { playerName: [cardId,...] }
-  // used_cards stored in rooms.used_cards as JSON: [cardId,...]
   const loadOrDealHand = async (fullDeck, playerList, currentRound, room) => {
-    // Parse existing dealt hands from room
     let dealtHands = {};
     let usedCards = [];
     try { dealtHands = JSON.parse(room?.dealt_hands||"{}"); } catch(e){}
     try { usedCards  = JSON.parse(room?.used_cards||"[]");  } catch(e){}
 
-    // If I already have a hand dealt, just restore it
     if (dealtHands[myName] && dealtHands[myName].length > 0) {
       const myCardIds = dealtHands[myName];
       const cardMap = {};
@@ -661,11 +657,9 @@ function Game({ go, S, roomCode, myName }) {
       if (hand.length > 0) { setHandCards(hand); return; }
     }
 
-    // Only the first-joined player (by created_at) does the deal to avoid race conditions
     const sortedByJoin = [...playerList].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0));
     const isDealer = sortedByJoin[0]?.name === myName;
     if (!isDealer) {
-      // Retry up to 4 times (waiting for dealer to write hands)
       for (let attempt = 0; attempt < 4; attempt++) {
         await new Promise(r => setTimeout(r, 1500 + attempt * 1000));
         const {data:freshRoom2} = await supabase.from("rooms").select("dealt_hands,used_cards").eq("code",roomCode).single();
@@ -678,19 +672,14 @@ function Game({ go, S, roomCode, myName }) {
           if (hand.length > 0) { setHandCards(hand); return; }
         }
       }
-      // If still no hand after retries, fall through and deal as if dealer
-      // Refresh usedCards from the latest DB state before dealing
       try {
         const {data:latestRoom} = await supabase.from("rooms").select("used_cards").eq("code",roomCode).single();
         usedCards = JSON.parse(latestRoom?.used_cards||"[]");
       } catch(e){}
     }
 
-    // Deal fresh hands for all players
-    // Cards already played in previous rounds cannot be reused unless deck is exhausted
     const allPlayedIds = new Set(usedCards);
     let available = fullDeck.filter(c => !allPlayedIds.has(c.id));
-    // If not enough cards, reset used pool (deck exhausted)
     const needed = playerList.length * 6;
     if (available.length < needed) available = [...fullDeck];
     const shuffled = shuffle(available);
@@ -700,12 +689,10 @@ function Game({ go, S, roomCode, myName }) {
       newHands[p.name] = shuffled.slice(i * 6, i * 6 + 6).map(c => c.id);
     });
 
-    // Save dealt hands to room
     await supabase.from("rooms").update({
       dealt_hands: JSON.stringify(newHands),
     }).eq("code", roomCode);
 
-    // Set my hand
     const cardMap = {};
     fullDeck.forEach(c => { cardMap[c.id] = c; });
     const myCardIds = newHands[myName] || [];
@@ -718,15 +705,12 @@ function Game({ go, S, roomCode, myName }) {
     const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",r);
     if(!plays||plays.length===0){setBoardCards([]);return;}
     const {data:vs}   = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",r);
-    // Single rooms query for both storyteller_idx and phase (avoids race between two queries)
     const {data:room} = await supabase.from("rooms").select("storyteller_idx,phase").eq("code",roomCode).single();
     const {data:ps}   = await supabase.from("room_players").select("name,id,created_at").eq("room_code",roomCode).eq("is_active",true);
-    // Sort players by join time (created_at) to get stable insertion-order list
     const sortedPs = ps ? [...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)) : [];
     const stIdx = room?.storyteller_idx||0;
     const stName = sortedPs[stIdx%Math.max(sortedPs.length,1)]?.name||"";
     const currentPhase = room?.phase ?? 0;
-    // Fetch full card data from Supabase for each card_id on the board
     const cardIds = plays.map(p=>p.card_id);
     const {data:cardData} = await supabase.from("cards").select("*").in("id",cardIds);
     const BG_POOL2 = [
@@ -739,33 +723,68 @@ function Game({ go, S, roomCode, myName }) {
     FALLBACK_DECK.forEach(c=>{ if(!cardMap[c.id]) cardMap[c.id]=c; });
     const cards = plays.map(play=>{
       const cd = cardMap[play.card_id] || FALLBACK_DECK[0];
-      // Only expose isStoryteller flag in reveal phase (3)
       const isStCard = play.player_name===stName;
       return {
         ...cd,
         owner: currentPhase>=3 ? play.player_name : "?",
         isStoryteller: currentPhase>=3 ? isStCard : false,
-        isMyCard: play.player_name === myName, // safe: only used client-side to block own vote
+        isMyCard: play.player_name === myName,
         votes: vs ? vs.filter(v=>v.voted_card_id===play.card_id).map(v=>v.voter_name) : [],
       };
     });
-    // Use a stable shuffle order per round — don't re-shuffle on every update
     const roundKey = r;
     if(!boardOrderRef.current[roundKey]) {
-      // First time we see cards for this round — shuffle and lock in the order
       boardOrderRef.current[roundKey] = shuffle(cards).map(c=>c.id);
     }
     const order = boardOrderRef.current[roundKey];
-    // Sort cards according to the locked order; new cards (not yet in order) go at end
     const cardById = {};
     cards.forEach(c=>{ cardById[c.id]=c; });
     const ordered = [
       ...order.map(id=>cardById[id]).filter(Boolean),
       ...cards.filter(c=>!order.includes(c.id)),
     ];
-    // Update order ref to include any new cards
     boardOrderRef.current[roundKey] = ordered.map(c=>c.id);
     setBoardCards(ordered);
+  };
+
+  // ── Helper: check if all votes are in and advance to phase 3 ─
+  // This is the single source of truth for the phase 2→3 transition.
+  // Called from both the votes realtime listener AND after confirmVote.
+  const checkAndAdvanceToReveal = async (currentRound) => {
+    const rnd = currentRound || roundRef.current;
+
+    // Fetch current room phase first — bail out if not in voting phase
+    const {data:roomCheck} = await supabase.from("rooms")
+      .select("phase,storyteller_idx")
+      .eq("code",roomCode)
+      .single();
+    if (!roomCheck || roomCheck.phase !== 2) return;
+
+    // Count votes
+    const {data:allVotes} = await supabase.from("votes")
+      .select("id")
+      .eq("room_code",roomCode)
+      .eq("round",rnd);
+    const voteCount = allVotes?.length || 0;
+
+    // Count non-storyteller players
+    const {data:freshPs} = await supabase.from("room_players")
+      .select("name,created_at")
+      .eq("room_code",roomCode)
+      .eq("is_active",true);
+    if (!freshPs || freshPs.length === 0) return;
+
+    const sorted = [...freshPs].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0));
+    const stName = sorted[roomCheck.storyteller_idx % sorted.length]?.name || "";
+    const votersNeeded = sorted.filter(p => p.name !== stName).length;
+
+    if (votersNeeded > 0 && voteCount >= votersNeeded) {
+      // Use a conditional update so only one client wins the race
+      await supabase.from("rooms")
+        .update({phase:3})
+        .eq("code",roomCode)
+        .eq("phase",2); // guard: only update if still in phase 2
+    }
   };
 
   useEffect(()=>{
@@ -790,7 +809,6 @@ function Game({ go, S, roomCode, myName }) {
       const fullDeck = realCards.length>0 ? realCards : FALLBACK_DECK;
       deckRef.current = fullDeck;
 
-      // Load dealt hands from DB (server-authoritative)
       const myHand = await loadOrDealHand(fullDeck, ps||[], room?.round||1, room);
       await loadBoard(room?.round||1);
       const {data:myPlay} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",room?.round||1).eq("player_name",myName).single();
@@ -802,7 +820,7 @@ function Game({ go, S, roomCode, myName }) {
       }
       setDebugMsg(fullDeck.length + " cards loaded from " + (realCards.length>0?"Supabase":"fallback deck"));
       setLoading(false);
-      setTimeout(()=>setDebugMsg(""), 3000); // clear after load
+      setTimeout(()=>setDebugMsg(""), 3000);
     };
     init();
 
@@ -827,14 +845,11 @@ function Game({ go, S, roomCode, myName }) {
         setPhase(r.phase);setStorytellerIdx(r.storyteller_idx);
         if(isNewRound){setRound(r.round);setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);setRoundDeltas(null);setBoardCards([]);setFocusedBoard(0);boardOrderRef.current={};}
         if(r.clue) setConfirmedClue(r.clue); else setConfirmedClue("");
-        // Show round summary overlay on all clients when round_deltas is set
         if(r.round_deltas && r.round_deltas!=="null" && !isNewRound){
           try { const d=JSON.parse(r.round_deltas); if(d&&typeof d==="object") setRoundDeltas(d); } catch(e){}
         }
-        // Deterministic tab: board for voting/reveal, hand otherwise
         if(!r.round_deltas || r.round_deltas==="null") setGameTab(r.phase>=2?"board":"hand");
         await loadBoard(r.round);
-        // New round: restore updated hand from dealt_hands (storyteller already replaced played cards)
         if(isNewRound && r.dealt_hands && r.dealt_hands!=="{}") {
           let newHands={};
           try { newHands=JSON.parse(r.dealt_hands); } catch(e){}
@@ -848,7 +863,15 @@ function Game({ go, S, roomCode, myName }) {
         }
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"card_plays",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||roundRef.current); })
-      .on("postgres_changes",{event:"*",schema:"public",table:"votes",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||roundRef.current); })
+      // ── FIX: votes listener now also checks for phase advancement ──
+      .on("postgres_changes",{event:"*",schema:"public",table:"votes",filter:`room_code=eq.${roomCode}`},async()=>{
+        const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single();
+        const currentRound = rr?.round || roundRef.current;
+        await loadBoard(currentRound);
+        // Every client independently checks — the conditional update (.eq("phase",2)) ensures
+        // only one DB write happens even if multiple clients call this simultaneously.
+        await checkAndAdvanceToReveal(currentRound);
+      })
       .on("postgres_changes",{event:"*",schema:"public",table:"room_players",filter:`room_code=eq.${roomCode}`},async()=>{
         const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
         if(ps){ const sorted=[...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score})));if(ps.length<3)setGameDisbanded(true);else setGameDisbanded(false);}
@@ -863,7 +886,7 @@ function Game({ go, S, roomCode, myName }) {
     const card = handCards[selHand];
     if(!card) return;
     play("clueGiven");
-    setConfirmedClue(clueText.trim()); // set immediately before async to avoid flash
+    setConfirmedClue(clueText.trim());
     await supabase.from("rooms").update({clue:clueText.trim(),phase:1}).eq("code",roomCode);
     const {data:existing} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",roundRef.current).eq("player_name",myName).single();
     if(!existing) await supabase.from("card_plays").insert({room_code:roomCode,round:roundRef.current,player_name:myName,card_id:card.id});
@@ -879,12 +902,14 @@ function Game({ go, S, roomCode, myName }) {
     await supabase.from("card_plays").insert({room_code:roomCode,round:roundRef.current,player_name:myName,card_id:card.id});
     setSubmittedCardId(card.id);
     const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
-    // Always use fresh player count from DB
     const {data:freshPsCount} = await supabase.from("room_players").select("id").eq("room_code",roomCode).eq("is_active",true);
     const activeCount = freshPsCount?.length || 0;
     if(activeCount>0 && plays&&plays.length>=activeCount) await supabase.from("rooms").update({phase:2}).eq("code",roomCode);
   };
 
+  // ── FIX: confirmVote no longer tries to advance phase itself.
+  // It just inserts the vote and updates local UI state.
+  // The realtime votes listener (above) handles phase advancement reliably.
   const confirmVote = async ()=>{
     if(boardOverlay===null) return;
     const card = boardCards[boardOverlay];
@@ -893,12 +918,17 @@ function Game({ go, S, roomCode, myName }) {
     if(card.isMyCard || card.id===submittedCardId) return;
     play("vote");
 
-    // 1. Check for duplicate vote
+    // Check for duplicate vote before inserting
     const {data:existing} = await supabase.from("votes")
       .select("id").eq("room_code",roomCode).eq("round",roundRef.current).eq("voter_name",myName).maybeSingle();
-    if(existing) return;
+    if(existing) {
+      setVoteConfirmed(true);
+      setVotedFor(existing.voted_card_id || card.id);
+      setBoardOverlay(null);
+      return;
+    }
 
-    // 2. Insert vote
+    // Insert the vote
     const {error:voteErr} = await supabase.from("votes")
       .insert({room_code:roomCode, round:roundRef.current, voter_name:myName, voted_card_id:card.id});
     if(voteErr){ console.error("vote insert failed", voteErr); return; }
@@ -906,27 +936,8 @@ function Game({ go, S, roomCode, myName }) {
     setVotedFor(card.id);
     setVoteConfirmed(true);
     setBoardOverlay(null);
-
-    // 3. Count ALL votes for this round fresh from DB
-    const {data:allVotes} = await supabase.from("votes")
-      .select("id").eq("room_code",roomCode).eq("round",roundRef.current);
-    const voteCount = allVotes?.length || 0;
-
-    // 4. Count how many non-storytellers there are (fresh from DB)
-    const {data:freshRoom4} = await supabase.from("rooms")
-      .select("storyteller_idx").eq("code",roomCode).single();
-    const {data:freshPs4} = await supabase.from("room_players")
-      .select("name,created_at").eq("room_code",roomCode).eq("is_active",true);
-    if(!freshRoom4 || !freshPs4 || freshPs4.length===0) return;
-
-    const sorted4 = [...freshPs4].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0));
-    const stName4 = sorted4[freshRoom4.storyteller_idx % sorted4.length]?.name || "";
-    const votersNeeded = sorted4.filter(p=>p.name!==stName4).length;
-
-    // 5. Advance to reveal only when ALL non-storytellers have voted
-    if(votersNeeded > 0 && voteCount >= votersNeeded){
-      await supabase.from("rooms").update({phase:3}).eq("code",roomCode).eq("phase",2);
-    }
+    // NOTE: phase advancement is now handled entirely by the votes realtime listener
+    // and checkAndAdvanceToReveal — no duplicate logic here.
   };
 
   const endRound = async ()=>{
@@ -936,7 +947,6 @@ function Game({ go, S, roomCode, myName }) {
     try {
       const rnd = roundRef.current;
 
-      // Fetch everything fresh — never trust React state for scoring
       const [{data:freshPlays},{data:freshVotes},{data:freshRoom},{data:freshPs}] = await Promise.all([
         supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",rnd),
         supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",rnd),
@@ -952,19 +962,16 @@ function Game({ go, S, roomCode, myName }) {
 
       const votes = freshVotes || [];
 
-      // Resolve storyteller
       const sortedPs = [...freshPs].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0));
       const stName = sortedPs[freshRoom.storyteller_idx % sortedPs.length]?.name || "";
       const playerNames = sortedPs.map(p=>p.name);
       const nonST = playerNames.filter(n=>n!==stName);
 
-      // Who voted for the storyteller's card?
       const stPlay = freshPlays.find(p=>p.player_name===stName);
       const correctVoters = stPlay
         ? votes.filter(v=>v.voted_card_id===stPlay.card_id).map(v=>v.voter_name)
         : [];
 
-      // Dixit scoring
       const allOrNone = correctVoters.length===0 || correctVoters.length===nonST.length;
       const deltas = {};
       playerNames.forEach(p=>{ deltas[p]=0; });
@@ -975,7 +982,6 @@ function Game({ go, S, roomCode, myName }) {
       } else {
         nonST.forEach(p=>{ deltas[p] = (deltas[p]||0) + 2; });
       }
-      // +1 bonus per vote on non-storyteller cards
       freshPlays.filter(p=>p.player_name!==stName).forEach(p=>{
         const vCount = votes.filter(v=>v.voted_card_id===p.card_id).length;
         if(vCount>0) deltas[p.player_name] = (deltas[p.player_name]||0) + vCount;
@@ -983,17 +989,14 @@ function Game({ go, S, roomCode, myName }) {
 
       const newScores = freshPs.map(p=>({name:p.name, score:(p.score||0)+(deltas[p.name]||0)}));
 
-      // Write scores to DB
       await Promise.all(newScores.map(s=>
         supabase.from("room_players").update({score:s.score}).eq("room_code",roomCode).eq("name",s.name)
       ));
 
-      // Set local state
       setRoundDeltas(deltas);
       setScores(newScores);
       play("score");
 
-      // Broadcast round_deltas — triggers overlay on all clients via realtime
       await supabase.from("rooms").update({round_deltas: JSON.stringify(deltas)}).eq("code",roomCode);
 
       const top = Math.max(...newScores.map(s=>s.score));
@@ -1016,9 +1019,7 @@ function Game({ go, S, roomCode, myName }) {
     boardOrderRef.current = {};
     setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setConfirmedClue("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);setGameTab("hand");
 
-    // Fetch played cards this round and current room state
-    // Use roundRef.current (not stale React state) for the correct round number
-    const currentRoundNum = roundRef.current - 1; // roundRef was already incremented above
+    const currentRoundNum = roundRef.current - 1;
     const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",currentRoundNum);
     const {data:currentRoom} = await supabase.from("rooms").select("used_cards,dealt_hands").eq("code",roomCode).single();
     let usedCards = [];
@@ -1026,45 +1027,35 @@ function Game({ go, S, roomCode, myName }) {
     try { usedCards  = JSON.parse(currentRoom?.used_cards||"[]");  } catch(e){}
     try { dealtHands = JSON.parse(currentRoom?.dealt_hands||"{}"); } catch(e){}
 
-    // Mark played cards as used
     if(plays) plays.forEach(p=>{ if(!usedCards.includes(p.card_id)) usedCards.push(p.card_id); });
 
-    // Build set of all cards currently in any hand so we don't re-deal them
     const allHandCardIds = new Set();
     Object.values(dealtHands).forEach(ids => ids.forEach(id => allHandCardIds.add(id)));
 
-    // Pick pool of replacement cards: not used and not currently in any hand
     const usedSet = new Set(usedCards);
     let available = deckRef.current.filter(c => !usedSet.has(c.id) && !allHandCardIds.has(c.id));
-    // If pool is too small, fall back to just not-in-hand
     if (available.length < (plays?.length||0)) available = deckRef.current.filter(c => !allHandCardIds.has(c.id));
-    // Last resort: use full deck
     if (available.length < (plays?.length||0)) available = [...deckRef.current];
     const replacements = shuffle(available);
     let replIdx = 0;
 
-    // For each player, replace only the card they played with a new one
     const newDealtHands = {...dealtHands};
     const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-    // Sort consistently by created_at so player order is stable across all clients
     const sortedPsNext = ps ? [...ps].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0)) : [];
     sortedPsNext.forEach(p => {
       const playedCard = plays?.find(pl=>pl.player_name===p.name);
-      if (!playedCard) return; // player didn't submit — keep hand as-is
+      if (!playedCard) return;
       const currentHand = newDealtHands[p.name] || [];
       const playedIdx = currentHand.indexOf(playedCard.card_id);
       if (playedIdx === -1) {
-        // Card not found in hand (edge case) — just append new card
         newDealtHands[p.name] = [...currentHand, replacements[replIdx++]?.id].filter(Boolean);
       } else {
-        // Replace the played card with a new one in the same slot
         const newHand = [...currentHand];
         newHand[playedIdx] = replacements[replIdx++]?.id || currentHand[playedIdx];
         newDealtHands[p.name] = newHand;
       }
     });
 
-    // Save updated hands and advance round (clear round_deltas)
     await supabase.from("rooms").update({
       phase:0, round:newRound, storyteller_idx:newIdx, clue:null,
       used_cards: JSON.stringify(usedCards),
@@ -1072,7 +1063,6 @@ function Game({ go, S, roomCode, myName }) {
       round_deltas: null,
     }).eq("code",roomCode);
 
-    // Restore my hand immediately from new dealt_hands
     const cardMap = {};
     deckRef.current.forEach(c => { cardMap[c.id] = c; });
     const myNewIds = newDealtHands[myName] || [];
@@ -1257,7 +1247,6 @@ function Game({ go, S, roomCode, myName }) {
                           borderRadius:8,
                           boxShadow: c.isStoryteller&&phase===3 ? "0 0 14px rgba(201,149,42,0.6)" : "none",
                         }}>
-                          {/* Face-down in phase 2 — all cards look the same */}
                           {phase===1 ? <FaceDown size="mini"/> : <CardFace card={c} size="mini" />}
                         </div>
                         {phase===3&&(
@@ -1436,7 +1425,6 @@ function Game({ go, S, roomCode, myName }) {
             <div style={{display:"flex",gap:12,width:"100%"}}>
               <button style={{...S.btnO,flex:1,padding:"12px"}} onClick={()=>go(SCREENS.LOBBY)}>Lobby</button>
               <button style={{...S.btnP,flex:1,padding:"12px"}} onClick={async()=>{
-                // Reset all local state first
                 setWinner(null);
                 roundRef.current = 1;
                 boardOrderRef.current = {};
@@ -1491,7 +1479,6 @@ export default function App() {
   const [themeName, setThemeName] = useState("dark");
   const [isHost, setIsHost]       = useState(false);
 
-  // Restore session from sessionStorage on refresh
   const savedCode   = sessionStorage.getItem("hk_room") || "";
   const savedName   = sessionStorage.getItem("hk_name") || "";
   const savedScreen = sessionStorage.getItem("hk_screen") || SCREENS.LANDING;
@@ -1500,11 +1487,9 @@ export default function App() {
   const [roomCode, setRoomCode] = useState(savedCode);
   const [myName, setMyName]     = useState(savedName);
 
-  // Persist session state on every change
   const go = (s) => {
     setScreen(s);
     sessionStorage.setItem("hk_screen", s);
-    // Clear session when going back to landing or lobby
     if(s===SCREENS.LANDING || s===SCREENS.LOBBY) {
       sessionStorage.removeItem("hk_room");
       sessionStorage.removeItem("hk_name");
