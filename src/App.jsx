@@ -448,8 +448,11 @@ function Lobby({ go, S, setRoomCode, setMyName, setIsHost }) {
     if(!room){setError("Room not found. Check the code and try again.");setLoading(false);return;}
     const {data:existing} = await supabase.from("room_players").select("*").eq("room_code",upper).eq("name",name.trim()).single();
     if(existing){
+      // Rejoin: allowed even mid-game
       await supabase.from("room_players").update({is_active:true}).eq("id",existing.id);
     } else {
+      // New player: only allowed if game hasn't started
+      if(room.status==="playing"){setError("Game already in progress. You can only rejoin with your original name.");setLoading(false);return;}
       const {data:all} = await supabase.from("room_players").select("*").eq("room_code",upper);
       if(all&&all.length>=8){setError("Room is full (max 8 players).");setLoading(false);return;}
       await supabase.from("room_players").insert({room_code:upper,name:name.trim(),score:0,is_active:true});
@@ -605,7 +608,7 @@ function Game({ go, S, roomCode, myName }) {
   const [focusedHand, setFocusedHand]   = useState(null);
   const [focusedBoard, setFocusedBoard] = useState(0);
   const [boardOverlay, setBoardOverlay] = useState(null);
-  const [votedFor, setVotedFor]         = useState(null);
+  const [votedFor, setVotedFor]         = useState(null); // stores card_id string
   const [voteConfirmed, setVoteConfirmed] = useState(false);
   const [confirmExit, setConfirmExit]   = useState(false);
   const [showScores, setShowScores]     = useState(false);
@@ -622,9 +625,11 @@ function Game({ go, S, roomCode, myName }) {
   const [boardCards, setBoardCards]     = useState([]);
   const [submittedCardId, setSubmittedCardId] = useState(null);
   const [loading, setLoading]           = useState(true);
+  const [debugMsg, setDebugMsg]         = useState("");
 
   const PLAYER_LIST  = players.map(p=>p.name);
-  const WIN_TARGET   = PLAYER_LIST.length<=6?30:42;
+  // WIN_TARGET: use loaded player count; fall back to 30 (safe) before players load
+  const WIN_TARGET   = PLAYER_LIST.length===0 ? 30 : PLAYER_LIST.length<=6 ? 30 : 42;
   const STORYTELLER  = PLAYER_LIST[storytellerIdx%Math.max(PLAYER_LIST.length,1)]||"";
   const isStoryteller = myName===STORYTELLER;
   const gameRound    = Math.floor(storytellerIdx/Math.max(PLAYER_LIST.length,1))+1;
@@ -657,17 +662,25 @@ function Game({ go, S, roomCode, myName }) {
     const sortedNames = [...playerList.map(p=>p.name)].sort();
     const isDealer = sortedNames[0] === myName;
     if (!isDealer) {
-      // Wait up to 5s for dealer to write hands, then reload
-      await new Promise(r => setTimeout(r, 2500));
-      const {data:freshRoom} = await supabase.from("rooms").select("dealt_hands,used_cards").eq("code",roomCode).single();
-      let freshHands = {};
-      try { freshHands = JSON.parse(freshRoom?.dealt_hands||"{}"); } catch(e){}
-      if (freshHands[myName]?.length > 0) {
-        const cardMap = {};
-        fullDeck.forEach(c => { cardMap[c.id] = c; });
-        const hand = freshHands[myName].map(id => cardMap[id]).filter(Boolean);
-        if (hand.length > 0) { setHandCards(hand); return; }
+      // Retry up to 4 times (waiting for dealer to write hands)
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await new Promise(r => setTimeout(r, 1500 + attempt * 1000));
+        const {data:freshRoom2} = await supabase.from("rooms").select("dealt_hands,used_cards").eq("code",roomCode).single();
+        let freshHands = {};
+        try { freshHands = JSON.parse(freshRoom2?.dealt_hands||"{}"); } catch(e){}
+        if (freshHands[myName]?.length > 0) {
+          const cardMap = {};
+          fullDeck.forEach(c => { cardMap[c.id] = c; });
+          const hand = freshHands[myName].map(id => cardMap[id]).filter(Boolean);
+          if (hand.length > 0) { setHandCards(hand); return; }
+        }
       }
+      // If still no hand after retries, fall through and deal as if dealer
+      // Refresh usedCards from the latest DB state before dealing
+      try {
+        const {data:latestRoom} = await supabase.from("rooms").select("used_cards").eq("code",roomCode).single();
+        usedCards = JSON.parse(latestRoom?.used_cards||"[]");
+      } catch(e){}
     }
 
     // Deal fresh hands for all players
@@ -702,10 +715,14 @@ function Game({ go, S, roomCode, myName }) {
     const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",r);
     if(!plays||plays.length===0){setBoardCards([]);return;}
     const {data:vs}   = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",r);
-    const {data:room} = await supabase.from("rooms").select("storyteller_idx").eq("code",roomCode).single();
-    const {data:ps}   = await supabase.from("room_players").select("name").eq("room_code",roomCode).eq("is_active",true);
+    // Single rooms query for both storyteller_idx and phase (avoids race between two queries)
+    const {data:room} = await supabase.from("rooms").select("storyteller_idx,phase").eq("code",roomCode).single();
+    const {data:ps}   = await supabase.from("room_players").select("name,id").eq("room_code",roomCode).eq("is_active",true);
+    // Sort players by join order (id) to get stable list for storyteller resolution
+    const sortedPs = ps ? [...ps].sort((a,b)=>(a.id||0)-(b.id||0)) : [];
     const stIdx = room?.storyteller_idx||0;
-    const stName = ps?.[stIdx%Math.max(ps.length,1)]?.name||"";
+    const stName = sortedPs[stIdx%Math.max(sortedPs.length,1)]?.name||"";
+    const currentPhase = room?.phase ?? 0;
     // Fetch full card data from Supabase for each card_id on the board
     const cardIds = plays.map(p=>p.card_id);
     const {data:cardData} = await supabase.from("cards").select("*").in("id",cardIds);
@@ -717,9 +734,6 @@ function Game({ go, S, roomCode, myName }) {
     const cardMap = {};
     if(cardData) cardData.forEach((c,i)=>{ cardMap[c.id]={ ...c, bg: c.bg||BG_POOL2[i%BG_POOL2.length], emoji: c.emoji||"🎴" }; });
     FALLBACK_DECK.forEach(c=>{ if(!cardMap[c.id]) cardMap[c.id]=c; });
-    // Fetch current phase to know whether to reveal storyteller identity
-    const {data:phaseData} = await supabase.from("rooms").select("phase").eq("code",roomCode).single();
-    const currentPhase = phaseData?.phase ?? 0;
     const cards = plays.map(play=>{
       const cd = cardMap[play.card_id] || FALLBACK_DECK[0];
       // Only expose isStoryteller flag in reveal phase (3)
@@ -738,7 +752,7 @@ function Game({ go, S, roomCode, myName }) {
     if(!roomCode) return;
     const init = async ()=>{
       const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-      if(ps){setPlayers(ps);setScores(ps.map(p=>({name:p.name,score:p.score})));}
+      if(ps){ const sorted=[...ps].sort((a,b)=>(a.id||0)-(b.id||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score}))); }
       const {data:room} = await supabase.from("rooms").select("*").eq("code",roomCode).single();
       if(room){
         setPhase(room.phase);setRound(room.round);setStorytellerIdx(room.storyteller_idx);
@@ -762,9 +776,10 @@ function Game({ go, S, roomCode, myName }) {
       const {data:myPlay} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",room?.round||1).eq("player_name",myName).single();
       if(myPlay) setSubmittedCardId(myPlay.card_id);
       const {data:myVote} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",room?.round||1).eq("voter_name",myName).single();
-      if(myVote){setVoteConfirmed(true);}
+      if(myVote){setVoteConfirmed(true);setVotedFor(myVote.voted_card_id);}
       setDebugMsg(fullDeck.length + " cards loaded from " + (realCards.length>0?"Supabase":"fallback deck"));
       setLoading(false);
+      setTimeout(()=>setDebugMsg(""), 3000); // clear after load
     };
     init();
 
@@ -787,20 +802,21 @@ function Game({ go, S, roomCode, myName }) {
         setPhase(r.phase);setStorytellerIdx(r.storyteller_idx);
         if(r.round!==round){setRound(r.round);setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);setRoundDeltas(null);setBoardCards([]);setFocusedBoard(0);}
         if(r.clue) setConfirmedClue(r.clue); else setConfirmedClue("");
-        setGameTab(r.phase>=2?"board":r.phase===0?"hand":gameTab);
+        // Deterministic tab: board for voting/reveal, hand otherwise
+        setGameTab(r.phase>=2?"board":"hand");
         await loadBoard(r.round);
         // If dealt_hands reset (new round), re-deal for this player
         if(r.dealt_hands==="{}" || r.dealt_hands==null) {
           const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-          setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);
+          setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setConfirmedClue("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);setGameTab("hand");
           await loadOrDealHand(deckRef.current, ps||[], r.round, r);
         }
       })
-      .on("postgres_changes",{event:"*",schema:"public",table:"card_plays",filter:`room_code=eq.${roomCode}`},()=>loadBoard())
-      .on("postgres_changes",{event:"*",schema:"public",table:"votes",filter:`room_code=eq.${roomCode}`},()=>loadBoard())
+      .on("postgres_changes",{event:"*",schema:"public",table:"card_plays",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||round); })
+      .on("postgres_changes",{event:"*",schema:"public",table:"votes",filter:`room_code=eq.${roomCode}`},async()=>{ const {data:rr}=await supabase.from("rooms").select("round").eq("code",roomCode).single(); loadBoard(rr?.round||round); })
       .on("postgres_changes",{event:"*",schema:"public",table:"room_players",filter:`room_code=eq.${roomCode}`},async()=>{
         const {data:ps} = await supabase.from("room_players").select("*").eq("room_code",roomCode).eq("is_active",true);
-        if(ps){setPlayers(ps);setScores(ps.map(p=>({name:p.name,score:p.score})));if(ps.length<3)setGameDisbanded(true);}
+        if(ps){ const sorted=[...ps].sort((a,b)=>(a.id||0)-(b.id||0)); setPlayers(sorted);setScores(sorted.map(p=>({name:p.name,score:p.score})));if(ps.length<3)setGameDisbanded(true);}
       })
       .subscribe();
     return ()=>{ supabase.removeChannel(ch); supabase.removeChannel(presenceCh); };
@@ -812,11 +828,11 @@ function Game({ go, S, roomCode, myName }) {
     const card = handCards[selHand];
     if(!card) return;
     play("clueGiven");
+    setConfirmedClue(clueText.trim()); // set immediately before async to avoid flash
     await supabase.from("rooms").update({clue:clueText.trim(),phase:1}).eq("code",roomCode);
     const {data:existing} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round).eq("player_name",myName).single();
     if(!existing) await supabase.from("card_plays").insert({room_code:roomCode,round,player_name:myName,card_id:card.id});
     setSubmittedCardId(card.id);
-    setConfirmedClue(clueText);
   };
 
   const submitCard = async ()=>{
@@ -828,18 +844,24 @@ function Game({ go, S, roomCode, myName }) {
     await supabase.from("card_plays").insert({room_code:roomCode,round,player_name:myName,card_id:card.id});
     setSubmittedCardId(card.id);
     const {data:plays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round);
-    if(plays&&plays.length>=players.length) await supabase.from("rooms").update({phase:2}).eq("code",roomCode);
+    // Use fresh player count from DB to avoid stale React state
+    const {data:freshPsCount} = await supabase.from("room_players").select("id").eq("room_code",roomCode).eq("is_active",true);
+    const activeCount = freshPsCount?.length || players.length;
+    if(plays&&plays.length>=activeCount) await supabase.from("rooms").update({phase:2}).eq("code",roomCode);
   };
 
   const confirmVote = async ()=>{
     if(boardOverlay===null) return;
     const card = boardCards[boardOverlay];
-    if(!card||card.owner===myName) return;
+    if(!card) return;
+    // Check own card via submitted card_id (owner field is "?" in phase 2)
+    if(card.id===submittedCardId) return;
     play("vote");
     const {data:existing} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",round).eq("voter_name",myName).single();
     if(existing) return;
     await supabase.from("votes").insert({room_code:roomCode,round,voter_name:myName,voted_card_id:card.id});
-    setVotedFor(boardOverlay);setVoteConfirmed(true);setBoardOverlay(null);
+    setVotedFor(card.id); // store card_id, not index — index changes if board reshuffles
+    setVoteConfirmed(true);setBoardOverlay(null);
     const {data:vs} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",round);
     const nonST = players.filter(p=>p.name!==STORYTELLER);
     if(vs&&vs.length>=nonST.length) await supabase.from("rooms").update({phase:3}).eq("code",roomCode);
@@ -847,8 +869,16 @@ function Game({ go, S, roomCode, myName }) {
 
   const endRound = async ()=>{
     play("reveal");
-    const storytellerCard = boardCards.find(c=>c.isStoryteller);
-    const correctVoters   = storytellerCard?storytellerCard.votes:[];
+    // Fetch fresh data from DB to avoid stale boardCards state
+    const {data:freshPlays} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",round);
+    const {data:freshVotes} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",round);
+    const {data:freshRoom}  = await supabase.from("rooms").select("storyteller_idx").eq("code",roomCode).single();
+    const {data:freshPs}    = await supabase.from("room_players").select("name").eq("room_code",roomCode).eq("is_active",true);
+    const stIdx2 = freshRoom?.storyteller_idx||0;
+    const sortedFreshPs = freshPs ? [...freshPs].sort((a,b)=>(a.id||0)-(b.id||0)) : [];
+    const stName2 = sortedFreshPs[stIdx2%Math.max(sortedFreshPs.length,1)]?.name||"";
+    const stPlay = freshPlays?.find(p=>p.player_name===stName2);
+    const correctVoters = stPlay ? (freshVotes||[]).filter(v=>v.voted_card_id===stPlay.card_id).map(v=>v.voter_name) : [];
     const nonST = PLAYER_LIST.filter(p=>p!==STORYTELLER);
     const allOrNone = correctVoters.length===0||correctVoters.length===nonST.length;
     const deltas={};
@@ -859,7 +889,11 @@ function Game({ go, S, roomCode, myName }) {
     } else {
       nonST.forEach(p=>{deltas[p]=(deltas[p]||0)+2;});
     }
-    boardCards.filter(c=>!c.isStoryteller).forEach(c=>{if(c.votes.length>0)deltas[c.owner]=(deltas[c.owner]||0)+c.votes.length;});
+    // Bonus points: 1 per vote received on non-storyteller cards (from fresh DB)
+    (freshPlays||[]).filter(p=>p.player_name!==stName2).forEach(p=>{
+      const voteCount = (freshVotes||[]).filter(v=>v.voted_card_id===p.card_id).length;
+      if(voteCount>0) deltas[p.player_name]=(deltas[p.player_name]||0)+voteCount;
+    });
     setRoundDeltas(deltas);
     const newScores = scores.map(s=>({...s,score:s.score+(deltas[s.name]||0)}));
     setScores(newScores);
@@ -873,7 +907,7 @@ function Game({ go, S, roomCode, myName }) {
     play("newRound");
     const newIdx = storytellerIdx+1;
     const newRound = round+1;
-    setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);
+    setRoundDeltas(null);setSubmittedCardId(null);setVotedFor(null);setVoteConfirmed(false);setClueText("");setConfirmedClue("");setBoardCards([]);setSelHand(0);setFocusedBoard(0);setGameTab("hand");
 
     // Mark all played cards this round as used so they won't be redealt
     const {data:plays} = await supabase.from("card_plays").select("card_id").eq("room_code",roomCode).eq("round",round);
@@ -901,8 +935,6 @@ function Game({ go, S, roomCode, myName }) {
   };
 
   const activeBoardCard = boardCards[focusedBoard];
-
-  const [debugMsg, setDebugMsg] = useState("");
 
   if(loading) return (
     <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
@@ -979,7 +1011,7 @@ function Game({ go, S, roomCode, myName }) {
       {/* GAME TABS */}
       <div style={{display:"flex",flexShrink:0}}>
         {["hand","board"].map(tab=>(
-          <button key={tab} onClick={()=>setGameTab(tab)} style={{flex:1,padding:"10px 0",background:gameTab===tab?"var(--surfaceHi)":"transparent",borderBottom:gameTab===tab?"2px solid var(--gold)":"2px solid transparent",color:gameTab===tab?"var(--gold)":"var(--textMuted)",fontSize:12,letterSpacing:1,textTransform:"uppercase",border:"none",borderBottom:gameTab===tab?"2px solid var(--gold)":"2px solid transparent",cursor:"pointer",fontFamily:"inherit"}}>{tab}</button>
+          <button key={tab} onClick={()=>setGameTab(tab)} style={{flex:1,padding:"10px 0",background:gameTab===tab?"var(--surfaceHi)":"transparent",borderTop:"none",borderLeft:"none",borderRight:"none",borderBottom:gameTab===tab?"2px solid var(--gold)":"2px solid transparent",color:gameTab===tab?"var(--gold)":"var(--textMuted)",fontSize:12,letterSpacing:1,textTransform:"uppercase",cursor:"pointer",fontFamily:"inherit"}}>{tab}</button>
         ))}
       </div>
 
@@ -1017,7 +1049,7 @@ function Game({ go, S, roomCode, myName }) {
           {phase===1&&<div style={{textAlign:"center",padding:"14px",background:"var(--surface)",borderRadius:12,fontSize:13,color:"var(--textMuted)"}}>Waiting for all players to submit... ({boardCards.length}/{players.length})</div>}
           {phase===2&&!voteConfirmed&&<div style={{textAlign:"center",padding:"14px",background:"color-mix(in srgb, var(--gold) 8%, transparent)",border:"1px solid color-mix(in srgb, var(--gold) 25%, transparent)",borderRadius:12,fontSize:13,color:"var(--text)"}}>Vote for the card you think belongs to {STORYTELLER}.</div>}
           {phase===2&&voteConfirmed&&<div style={{textAlign:"center",padding:"14px",background:"var(--surface)",borderRadius:12,fontSize:13,color:"var(--textMuted)"}}>Vote cast ✓ — waiting for everyone...</div>}
-          {phase===3&&<div style={{textAlign:"center",padding:"14px",background:"color-mix(in srgb, var(--gold) 8%, transparent)",border:"1px solid color-mix(in srgb, var(--gold) 25%, transparent)",borderRadius:12,fontSize:13,color:"var(--text)"}}>Cards revealed! {STORYTELLER}'s card is highlighted in gold.</div>}
+          {phase===3&&<div style={{textAlign:"center",padding:"14px",background:"color-mix(in srgb, var(--gold) 8%, transparent)",border:"1px solid color-mix(in srgb, var(--gold) 25%, transparent)",borderRadius:12,fontSize:13,color:"var(--text)"}}><span>Cards revealed! </span><span style={{color:"#C9952A",fontWeight:600}}>{STORYTELLER}</span><span>'s card is highlighted in gold.</span></div>}
 
           {boardCards.length===0?(
             <div style={{textAlign:"center",color:"var(--textMuted)",fontSize:13,marginTop:40}}>No cards on the board yet.</div>
@@ -1036,21 +1068,18 @@ function Game({ go, S, roomCode, myName }) {
                   </div>
 
                   {phase===3&&(
-                    <div style={{textAlign:"center",marginTop:4}}>
-                      <span style={{fontSize:13,fontWeight:600,color:activeBoardCard.isStoryteller?"#C9952A":"var(--text)"}}>
-                        {activeBoardCard.owner}{activeBoardCard.isStoryteller?" ★":""}
-                      </span>
-                    </div>
-                  )}
-                  {phase===3&&(
-                    <div style={{textAlign:"center",marginTop:4}}>
-                      <span style={{fontSize:13,fontWeight:600,color:activeBoardCard.isStoryteller?"#C9952A":"var(--text)"}}>
-                        {activeBoardCard.owner}{activeBoardCard.isStoryteller?" ★":""}
+                    <div style={{textAlign:"center",marginTop:6}}>
+                      <span style={{
+                        fontSize:14,fontWeight:700,
+                        color:activeBoardCard.isStoryteller?"#C9952A":"var(--text)",
+                        letterSpacing:activeBoardCard.isStoryteller?1:0,
+                      }}>
+                        {activeBoardCard.owner||"?"}{activeBoardCard.isStoryteller?" ★":""}
                       </span>
                     </div>
                   )}
                   {phase===2&&!voteConfirmed&&(
-                    activeBoardCard.owner===myName
+                    activeBoardCard.id===submittedCardId
                       ? <div style={{fontSize:13,color:"var(--textMuted)",padding:"10px",textAlign:"center"}}>This is your card — you can't vote for it</div>
                       : <button style={{...S.btnP,padding:"13px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320}} onClick={()=>setBoardOverlay(focusedBoard)}>Vote for this card</button>
                   )}
@@ -1060,23 +1089,29 @@ function Game({ go, S, roomCode, myName }) {
                         <div style={{
                           transform:focusedBoard===i?"translateY(-4px)":"none",
                           transition:"transform 0.2s",
-                          outline: focusedBoard===i
-                            ? (c.isStoryteller&&phase===3 ? "3px solid #C9952A" : "2px solid var(--gold)")
-                            : (c.isStoryteller&&phase===3 ? "3px solid #C9952A" : "none"),
+                          outline: c.isStoryteller&&phase===3
+                            ? "3px solid #C9952A"
+                            : focusedBoard===i ? "2px solid var(--gold)" : "none",
                           borderRadius:8,
-                          boxShadow: c.isStoryteller&&phase===3 ? "0 0 12px rgba(201,149,42,0.5)" : "none",
-                          borderRadius:8,
+                          boxShadow: c.isStoryteller&&phase===3 ? "0 0 14px rgba(201,149,42,0.6)" : "none",
                         }}>
                           {/* Face-down in phase 2 — all cards look the same */}
                           {phase===1 ? <FaceDown size="mini"/> : <CardFace card={c} size="mini" />}
                         </div>
-                        {phase===3&&<span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"#C9952A":"var(--textMuted)",textAlign:"center",maxWidth:56,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>{c.owner}{c.isStoryteller?" ★":""}</span>}
-                        {votedFor===i&&<span style={{fontSize:9,color:"#7AC87A",display:"block",textAlign:"center"}}>✓</span>}
+                        {phase===3&&(
+                          <span style={{fontSize:9,fontWeight:600,color:c.isStoryteller?"#C9952A":"var(--textMuted)",textAlign:"center",maxWidth:56,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>
+                            {c.owner||"?"}{c.isStoryteller?" ★":""}
+                          </span>
+                        )}
+                        {votedFor===c.id&&<span style={{fontSize:9,color:"#7AC87A",display:"block",textAlign:"center"}}>✓</span>}
                       </div>
                     ))}
                   </div>
                   {phase===3&&isStoryteller&&!roundDeltas&&(
                     <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%",maxWidth:320}} onClick={endRound}>End Round and See Scores</button>
+                  )}
+                  {phase===3&&!isStoryteller&&!roundDeltas&&(
+                    <div style={{textAlign:"center",fontSize:12,color:"var(--textMuted)",padding:"10px"}}>Waiting for {STORYTELLER} to reveal the scores...</div>
                   )}
                 </div>
               )}
@@ -1093,7 +1128,7 @@ function Game({ go, S, roomCode, myName }) {
               {phase===1 ? <FaceDown size="medium"/> : <CardFace card={boardCards[boardOverlay]} size="medium"/>}
             </div>
             {phase===2&&(
-              boardCards[boardOverlay]?.owner===myName
+              boardCards[boardOverlay]?.id===submittedCardId
                 ? <div style={{fontSize:13,color:"#C4622D",textAlign:"center",padding:"10px"}}>This is your card — you can't vote for it</div>
                 : <button style={{...S.btnP,padding:"14px",fontSize:15,borderRadius:10,width:"100%"}} onClick={confirmVote}>Confirm Vote</button>
             )}
@@ -1134,16 +1169,16 @@ function Game({ go, S, roomCode, myName }) {
                   </div>
                 </div>
               ) : (
-                <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:boardCards[fullscreen.idx]?.bg,border:"2px solid rgba(201,149,42,0.2)",boxShadow:"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
+                <div style={{width:"min(68vw, calc(100vh * 0.714))",height:"min(calc(68vw * 1.4), 100vh)",borderRadius:24,overflow:"hidden",background:boardCards[fullscreen.idx]?.bg,border:boardCards[fullscreen.idx]?.isStoryteller&&phase===3?"4px solid #C9952A":"2px solid rgba(201,149,42,0.2)",boxShadow:boardCards[fullscreen.idx]?.isStoryteller&&phase===3?"0 0 140px rgba(0,0,0,0.95),0 0 30px rgba(201,149,42,0.4)":"0 0 140px rgba(0,0,0,0.95)",zIndex:2,position:"relative"}}>
                   {boardCards[fullscreen.idx]?.image_url
                     ?<img src={boardCards[fullscreen.idx].image_url} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
                     :<span style={{fontSize:"clamp(100px,22vw,220px)",lineHeight:1,position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)"}}>{boardCards[fullscreen.idx]?.emoji}</span>
                   }
                 </div>
               )}
-              {phase===3&&boardCards[fullscreen.idx]&&(
-                <div style={{textAlign:"center",marginTop:8}}>
-                  <div style={{fontSize:16,fontWeight:600,color:boardCards[fullscreen.idx].isStoryteller?"#C9952A":"var(--text)"}}>
+              {phase===3&&boardCards[fullscreen.idx]&&boardCards[fullscreen.idx].owner&&boardCards[fullscreen.idx].owner!=="?"&&(
+                <div style={{textAlign:"center",marginTop:12}}>
+                  <div style={{fontSize:18,fontWeight:700,color:boardCards[fullscreen.idx].isStoryteller?"#C9952A":"var(--text)",letterSpacing:boardCards[fullscreen.idx].isStoryteller?1:0}}>
                     {boardCards[fullscreen.idx].owner}{boardCards[fullscreen.idx].isStoryteller?" ★":""}
                   </div>
                 </div>
@@ -1211,10 +1246,18 @@ function Game({ go, S, roomCode, myName }) {
             <div style={{display:"flex",gap:12,width:"100%"}}>
               <button style={{...S.btnO,flex:1,padding:"12px"}} onClick={()=>go(SCREENS.LOBBY)}>Lobby</button>
               <button style={{...S.btnP,flex:1,padding:"12px"}} onClick={async()=>{
+                // Reset all local state first
                 setWinner(null);
+                setPhase(0);setRound(1);setStorytellerIdx(0);
+                setConfirmedClue("");setClueText("");
+                setHandCards([]);setBoardCards([]);
+                setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);
+                setRoundDeltas(null);setSelHand(0);setFocusedBoard(0);
+                setGameTab("hand");
                 const reset=players.map(p=>({...p,score:0}));
+                setScores(reset.map(p=>({name:p.name,score:0})));
                 for(const p of reset) await supabase.from("room_players").update({score:0}).eq("room_code",roomCode).eq("name",p.name);
-                await supabase.from("rooms").update({phase:0,round:1,storyteller_idx:0,clue:null}).eq("code",roomCode);
+                await supabase.from("rooms").update({phase:0,round:1,storyteller_idx:0,clue:null,dealt_hands:"{}",used_cards:"[]"}).eq("code",roomCode);
               }}>Play Again</button>
             </div>
           </div>
