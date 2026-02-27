@@ -894,9 +894,9 @@ function Game({ go, S, roomCode, myName }) {
     // Block own card: use isMyCard flag (set in loadBoard from player_name) or card_id match
     if(card.isMyCard || card.id===submittedCardId) return;
     play("vote");
-    const {data:existing} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",round).eq("voter_name",myName).single();
+    const {data:existing} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",roundRef.current).eq("voter_name",myName).single();
     if(existing) return;
-    await supabase.from("votes").insert({room_code:roomCode,round,voter_name:myName,voted_card_id:card.id});
+    await supabase.from("votes").insert({room_code:roomCode,round:roundRef.current,voter_name:myName,voted_card_id:card.id});
     setVotedFor(card.id); // store card_id, not index — index changes if board reshuffles
     setVoteConfirmed(true);setBoardOverlay(null);
     const {data:vs} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
@@ -907,7 +907,9 @@ function Game({ go, S, roomCode, myName }) {
     const stIdxVote = freshRoomVote?.storyteller_idx||0;
     const stNameVote = sortedVotePs[stIdxVote%Math.max(sortedVotePs.length,1)]?.name||"";
     const nonSTVote = sortedVotePs.filter(p=>p.name!==stNameVote);
+    console.log("[confirmVote] votes fetched:", vs?.length, "nonST count:", nonSTVote.length, "nonST names:", nonSTVote.map(p=>p.name), "stName:", stNameVote);
     if(vs&&vs.length>=nonSTVote.length){
+      console.log("[confirmVote] advancing to phase 3");
       // Only advance if still in phase 2 — prevents race between simultaneous voters
       await supabase.from("rooms").update({phase:3}).eq("code",roomCode).eq("phase",2);
     }
@@ -917,15 +919,21 @@ function Game({ go, S, roomCode, myName }) {
     if(endRoundLoading) return; // prevent double-click
     setEndRoundLoading(true);
     play("reveal");
+    console.log("[endRound] START — roundRef.current:", roundRef.current, "round state:", round);
     try {
     // Fetch ALL fresh data from DB — never use stale React state for scoring
     const {data:freshPlays, error:e1} = await supabase.from("card_plays").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
     const {data:freshVotes, error:e2} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",roundRef.current);
     const {data:freshRoom,  error:e3} = await supabase.from("rooms").select("storyteller_idx").eq("code",roomCode).single();
     const {data:freshPs,    error:e4} = await supabase.from("room_players").select("name,score,created_at").eq("room_code",roomCode).eq("is_active",true);
-    if(e1||e2||e3||e4||!freshPlays||!freshRoom||!freshPs) { setEndRoundLoading(false); return; }
-    // freshVotes can be empty array (valid: nobody voted yet or 0 votes) — treat null as []
+    console.log("[endRound] fetched — plays:", freshPlays?.length, "votes:", freshVotes?.length, "room:", freshRoom, "players:", freshPs?.length);
+    console.log("[endRound] errors — e1:", e1, "e2:", e2, "e3:", e3, "e4:", e4);
+    // Only bail on errors for required data — votes can legitimately be empty
+    if(e1||e3||e4) { console.error("[endRound] BAILING on fetch error",{e1,e3,e4}); setEndRoundLoading(false); return; }
+    if(!freshPlays||!freshRoom||!freshPs) { console.error("[endRound] BAILING missing required data",{freshPlays,freshRoom,freshPs}); setEndRoundLoading(false); return; }
+    // freshVotes is allowed to be null/empty (no one voted = allOrNone scenario)
     const votes = freshVotes || [];
+    console.log("[endRound] votes count:", votes.length, "plays count:", freshPlays.length, "players:", freshPs.map(p=>p.name));
 
     // Resolve storyteller from fresh sorted player list
     const sortedFreshPs = [...freshPs].sort((a,b)=>new Date(a.created_at||0)-new Date(b.created_at||0));
@@ -969,8 +977,10 @@ function Game({ go, S, roomCode, myName }) {
       await supabase.from("room_players").update({score:s.score}).eq("room_code",roomCode).eq("name",s.name);
     }
 
+    console.log("[endRound] newScores:", newScores, "deltas:", deltas);
     // Broadcast round_deltas via rooms table so ALL clients show the summary overlay
-    await supabase.from("rooms").update({round_deltas: JSON.stringify(deltas)}).eq("code",roomCode);
+    const {error:rdErr} = await supabase.from("rooms").update({round_deltas: JSON.stringify(deltas)}).eq("code",roomCode);
+    console.log("[endRound] round_deltas write error:", rdErr);
 
     const top = Math.max(...newScores.map(s=>s.score));
     if(top>=WIN_TARGET){
