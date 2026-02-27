@@ -780,6 +780,9 @@ function Game({ go, S, roomCode, myName }) {
       if(myPlay) setSubmittedCardId(myPlay.card_id);
       const {data:myVote} = await supabase.from("votes").select("*").eq("room_code",roomCode).eq("round",room?.round||1).eq("voter_name",myName).single();
       if(myVote){setVoteConfirmed(true);setVotedFor(myVote.voted_card_id);}
+      if(room?.round_deltas && room.round_deltas!=="null"){
+        try { const d=JSON.parse(room.round_deltas); if(d&&typeof d==="object") setRoundDeltas(d); } catch(e){}
+      }
       setDebugMsg(fullDeck.length + " cards loaded from " + (realCards.length>0?"Supabase":"fallback deck"));
       setLoading(false);
       setTimeout(()=>setDebugMsg(""), 3000); // clear after load
@@ -807,8 +810,12 @@ function Game({ go, S, roomCode, myName }) {
         setPhase(r.phase);setStorytellerIdx(r.storyteller_idx);
         if(isNewRound){setRound(r.round);setSubmittedCardId(null);setVoteConfirmed(false);setVotedFor(null);setRoundDeltas(null);setBoardCards([]);setFocusedBoard(0);}
         if(r.clue) setConfirmedClue(r.clue); else setConfirmedClue("");
+        // Show round summary overlay on all clients when round_deltas is set
+        if(r.round_deltas && r.round_deltas!=="null" && !isNewRound){
+          try { const d=JSON.parse(r.round_deltas); if(d&&typeof d==="object") setRoundDeltas(d); } catch(e){}
+        }
         // Deterministic tab: board for voting/reveal, hand otherwise
-        setGameTab(r.phase>=2?"board":"hand");
+        if(!r.round_deltas || r.round_deltas==="null") setGameTab(r.phase>=2?"board":"hand");
         await loadBoard(r.round);
         // New round: restore updated hand from dealt_hands (storyteller already replaced played cards)
         if(isNewRound && r.dealt_hands && r.dealt_hands!=="{}") {
@@ -936,8 +943,10 @@ function Game({ go, S, roomCode, myName }) {
       await supabase.from("room_players").update({score:s.score}).eq("room_code",roomCode).eq("name",s.name);
     }
 
+    // Broadcast round_deltas via rooms table so ALL clients show the summary overlay
+    await supabase.from("rooms").update({round_deltas: JSON.stringify(deltas)}).eq("code",roomCode);
+
     const top = Math.max(...newScores.map(s=>s.score));
-    play("score");
     if(top>=WIN_TARGET){
       play("score"); setTimeout(()=>play("score"),400);
       setWinner({names:newScores.filter(s=>s.score===top).map(w=>w.name),scores:newScores,topScore:top});
@@ -997,11 +1006,12 @@ function Game({ go, S, roomCode, myName }) {
       }
     });
 
-    // Save updated hands and advance round
+    // Save updated hands and advance round (clear round_deltas)
     await supabase.from("rooms").update({
       phase:0, round:newRound, storyteller_idx:newIdx, clue:null,
       used_cards: JSON.stringify(usedCards),
       dealt_hands: JSON.stringify(newDealtHands),
+      round_deltas: null,
     }).eq("code",roomCode);
 
     // Restore my hand immediately from new dealt_hands
@@ -1379,7 +1389,7 @@ function Game({ go, S, roomCode, myName }) {
                 const reset=players.map(p=>({...p,score:0}));
                 setScores(reset.map(p=>({name:p.name,score:0})));
                 for(const p of reset) await supabase.from("room_players").update({score:0}).eq("room_code",roomCode).eq("name",p.name);
-                await supabase.from("rooms").update({phase:0,round:1,storyteller_idx:0,clue:null,dealt_hands:"{}",used_cards:"[]"}).eq("code",roomCode);
+                await supabase.from("rooms").update({phase:0,round:1,storyteller_idx:0,clue:null,dealt_hands:"{}",used_cards:"[]",round_deltas:null}).eq("code",roomCode);
               }}>Play Again</button>
             </div>
           </div>
